@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+buildCommand = "go build -o bcmemberapi"
+
+[deploy]
+startCommand = "./bcmemberapi"
+healthcheckPath = "/"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

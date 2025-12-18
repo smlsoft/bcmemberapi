@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/login/code.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/login/status.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/callback.go",
+      "use": "@vercel/go"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/login/code",
+      "dest": "/api/login/code.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/login/status",
+      "dest": "/api/login/status.go",
+      "methods": ["GET", "OPTIONS"]
+    },
+    {
+      "src": "/api/callback",
+      "dest": "/api/callback.go",
+      "methods": ["POST", "OPTIONS"]
+    }
+  ],
+  "env": {
+    "GO111MODULE": "on"
+  }
+}
