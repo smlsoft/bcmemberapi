@@ -87,15 +87,15 @@ func sendLineReceipt(lineUID, imageURL string) error {
 		log.Println("ERROR: LINE credentials not configured")
 		return nil
 	}
-
 	bot, err := linebot.New(channelSecret, channelToken)
 	if err != nil {
 		return err
 	}
 
+	textMessage := linebot.NewTextMessage("🧾 ขอบคุณที่ใช้บริการ")
 	imageMessage := linebot.NewImageMessage(imageURL, imageURL)
 
-	_, err = bot.PushMessage(lineUID, imageMessage).Do()
+	_, err = bot.PushMessage(lineUID, textMessage, imageMessage).Do()
 	return err
 }
 
