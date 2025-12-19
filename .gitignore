@@ -44,3 +44,4 @@ ngrok.log
 # Temporary files
 tmp/
 temp/
+.vercel

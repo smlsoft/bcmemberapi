@@ -12,6 +12,18 @@
     {
       "src": "api/callback.go",
       "use": "@vercel/go"
+    },
+    {
+      "src": "api/saleinvoice/index.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/recal-points/index.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/send-receipt/index.go",
+      "use": "@vercel/go"
     }
   ],
   "routes": [
@@ -28,6 +40,26 @@
     {
       "src": "/api/callback",
       "dest": "/api/callback.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/callback",
+      "dest": "/api/callback.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/saleinvoice",
+      "dest": "/api/saleinvoice/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/recal-points",
+      "dest": "/api/recal-points/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/send-receipt",
+      "dest": "/api/send-receipt/index.go",
       "methods": ["POST", "OPTIONS"]
     }
   ],

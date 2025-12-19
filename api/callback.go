@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +17,7 @@ import (
 )
 
 // Handler for POST /api/callback (LINE Webhook)
-func CallbackHandler(w http.ResponseWriter, r *http.Request) {
+func Handler(w http.ResponseWriter, r *http.Request) {
 	// CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -35,9 +36,11 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get LINE credentials from environment
-	channelSecret := os.Getenv("LINE_CHANNEL_SECRET")
-	channelToken := os.Getenv("LINE_CHANNEL_TOKEN")
+	channelSecret := strings.TrimSpace(os.Getenv("LINE_CHANNEL_SECRET"))
+	channelToken := strings.TrimSpace(os.Getenv("LINE_CHANNEL_TOKEN"))
+
 	if channelSecret == "" || channelToken == "" {
+		log.Println("ERROR: LINE credentials not configured")
 		http.Error(w, "LINE credentials not configured", http.StatusInternalServerError)
 		return
 	}
@@ -45,6 +48,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Create LINE bot client
 	bot, err := linebot.New(channelSecret, channelToken)
 	if err != nil {
+		log.Printf("ERROR: Failed to create LINE bot: %v", err)
 		http.Error(w, "Failed to create LINE bot: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -52,6 +56,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse LINE request
 	events, err := bot.ParseRequest(r)
 	if err != nil {
+		log.Printf("ERROR: ParseRequest failed: %v", err)
 		if err == linebot.ErrInvalidSignature {
 			w.WriteHeader(http.StatusBadRequest)
 		} else {
@@ -63,6 +68,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Get MongoDB URI
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
+		log.Println("ERROR: MongoDB URI not configured")
 		http.Error(w, "MongoDB URI not configured", http.StatusInternalServerError)
 		return
 	}
@@ -70,6 +76,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Create MongoDB store
 	st, err := store.NewStore(mongoURI)
 	if err != nil {
+		log.Printf("ERROR: Database connection failed: %v", err)
 		http.Error(w, "Database connection failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -77,6 +84,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	// Get Gemini API key
 	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
 	if geminiAPIKey == "" {
+		log.Println("ERROR: Gemini API key not configured")
 		http.Error(w, "Gemini API key not configured", http.StatusInternalServerError)
 		return
 	}
@@ -85,7 +93,7 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 	aiService := ai.NewGeminiService(geminiAPIKey)
 
 	// Process each event
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	for _, event := range events {
@@ -93,30 +101,36 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 			switch message := event.Message.(type) {
 			case *linebot.TextMessage:
 				text := strings.TrimSpace(message.Text)
+				userID := event.Source.UserID
 
 				// Check if it's a 4-digit code
 				if matched, _ := regexp.MatchString(`^\d{4}$`, text); matched {
 					// It's a login code
-					profile, err := bot.GetProfile(event.Source.UserID).Do()
+					profile, err := bot.GetProfile(userID).Do()
 					displayName := ""
+					pictureURL := ""
 					if err == nil {
 						displayName = profile.DisplayName
+						pictureURL = profile.PictureURL
 					}
 
-					err = st.VerifyCode(ctx, text, event.Source.UserID, displayName)
+					err = st.VerifyCode(ctx, text, userID, displayName, pictureURL)
 					if err != nil {
+						log.Printf("ERROR: VerifyCode failed: %v", err)
 						replyText(bot, event.ReplyToken, "รหัสไม่ถูกต้องหรือหมดอายุแล้ว")
 					} else {
-						replyText(bot, event.ReplyToken, "✅ เข้าสู่ระบบสำเร็จ!\n\nกรุณากลับไปที่เว็บไซต์เพื่อดำเนินการต่อ")
+						replyText(bot, event.ReplyToken, "✅ ยืนยันตัวตนสำเร็จแล้ว! \n\nกรุณากลับไปที่แอพเพื่อดำเนินการต่อ")
 					}
+				} else if text == "แต้มสะสม" || text == "แต้ม" || text == "พ้อยท์" || text == "point" || text == "points" {
+					// Check points command
+					response := getPointSummary(ctx, userID, st)
+					replyText(bot, event.ReplyToken, response)
 				} else {
 					// AI Chatbot logic
-					userID := event.Source.UserID
-
 					// Get chat history (last 6 messages = 3 conversation pairs to save AI tokens)
 					history, err := st.GetChatHistory(ctx, userID, 6)
 					if err != nil {
-						log.Printf("Error getting chat history: %v", err)
+						log.Printf("ERROR: GetChatHistory failed: %v", err)
 					}
 
 					// Convert to AI message format
@@ -131,18 +145,18 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 					// Generate AI response
 					aiResponse, err := aiService.GenerateResponseWithHistory(text, aiHistory)
 					if err != nil {
-						log.Printf("Error generating AI response: %v", err)
+						log.Printf("ERROR: GenerateResponseWithHistory failed: %v", err)
 						aiResponse = "ขอโทษครับ เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"
 					}
 
 					// Save user message
 					if err := st.SaveChatMessage(ctx, userID, "user", text); err != nil {
-						log.Printf("Error saving user message: %v", err)
+						log.Printf("ERROR: SaveChatMessage (user) failed: %v", err)
 					}
 
 					// Save AI response
 					if err := st.SaveChatMessage(ctx, userID, "assistant", aiResponse); err != nil {
-						log.Printf("Error saving AI response: %v", err)
+						log.Printf("ERROR: SaveChatMessage (assistant) failed: %v", err)
 					}
 
 					// Reply to user
@@ -157,6 +171,39 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 func replyText(bot *linebot.Client, token, text string) {
 	if _, err := bot.ReplyMessage(token, linebot.NewTextMessage(text)).Do(); err != nil {
-		log.Print(err)
+		log.Printf("ERROR: ReplyMessage failed: %v", err)
 	}
+}
+
+// getPointSummary retrieves point summary from members collection
+func getPointSummary(ctx context.Context, lineUID string, st *store.Store) string {
+	// Get members by LINE UID
+	members, err := st.GetMembersByLineUID(ctx, lineUID)
+	if err != nil {
+		log.Printf("ERROR: GetMembersByLineUID failed: %v", err)
+		return "❌ เกิดข้อผิดพลาดในการดึงข้อมูลแต้มสะสม"
+	}
+
+	// No points found
+	if len(members) == 0 {
+		return "📋 คุณยังไม่มีแต้มสะสม"
+	}
+
+	// Build response message
+	var sb strings.Builder
+	sb.WriteString("✨ แต้มสะสมของคุณ\n\n")
+
+	var totalPoints float64
+	for _, m := range members {
+		shopName := m.ShopName
+		if shopName == "" {
+			shopName = m.ShopID
+		}
+		sb.WriteString(fmt.Sprintf("🏪 %s: %.0f แต้ม\n", shopName, m.PointBalance))
+		totalPoints += m.PointBalance
+	}
+
+	sb.WriteString(fmt.Sprintf("\n📊 รวมทั้งหมด: %.0f แต้ม", totalPoints))
+
+	return sb.String()
 }

@@ -38,7 +38,7 @@ git push origin main
 
 ```bash
 # Deploy from local
-cd c:/git/bcmemberapi
+cd d:/BC/bcmemberapi
 vercel
 
 # หรือ deploy from GitHub

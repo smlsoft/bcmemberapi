@@ -10,6 +10,19 @@ import (
 	"bcmemberapi/store"
 )
 
+// StatusResponse represents the response for login status with point balance
+type StatusResponse struct {
+	Code         string    `json:"code"`
+	ShopID       string    `json:"shop_id,omitempty"`
+	Status       string    `json:"status"`
+	LineUserID   string    `json:"line_user_id,omitempty"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	PictureURL   string    `json:"picture_url,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	PointBalance float64   `json:"point_balance"`
+}
+
 // Handler for GET /api/login/status
 func StatusHandler(w http.ResponseWriter, r *http.Request) {
 	// CORS headers
@@ -61,7 +74,28 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build response with point balance
+	response := StatusResponse{
+		Code:         result.Code,
+		ShopID:       result.ShopID,
+		Status:       result.Status,
+		LineUserID:   result.LineUserID,
+		DisplayName:  result.DisplayName,
+		PictureURL:   result.PictureURL,
+		CreatedAt:    result.CreatedAt,
+		ExpiresAt:    result.ExpiresAt,
+		PointBalance: 0,
+	}
+
+	// Get point balance if login is successful and has shop_id
+	if result.Status == "success" && result.LineUserID != "" && result.ShopID != "" {
+		member, err := st.GetMemberByLineUIDAndShopID(ctx, result.LineUserID, result.ShopID)
+		if err == nil && member != nil {
+			response.PointBalance = member.PointBalance
+		}
+	}
+
 	// Return response
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(response)
 }
