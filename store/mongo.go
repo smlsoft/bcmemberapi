@@ -253,6 +253,22 @@ func (s *Store) GetMembersByLineUID(ctx context.Context, lineUID string) ([]Memb
 	return members, nil
 }
 
+// GetPointTransactionsByLineUID retrieves all point transactions for a LINE user (sorted by date desc)
+func (s *Store) GetPointTransactionsByLineUID(ctx context.Context, lineUID string) ([]PointTransaction, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(50)
+	cursor, err := s.pointTransColl.Find(ctx, bson.M{"line_uid": lineUID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var transactions []PointTransaction
+	if err := cursor.All(ctx, &transactions); err != nil {
+		return nil, err
+	}
+	return transactions, nil
+}
+
 // GetMemberByLineUIDAndShopID retrieves a member by LINE UID and Shop ID
 func (s *Store) GetMemberByLineUIDAndShopID(ctx context.Context, lineUID, shopID string) (*Member, error) {
 	filter := bson.M{

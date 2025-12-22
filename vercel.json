@@ -10,6 +10,14 @@
       "use": "@vercel/go"
     },
     {
+      "src": "api/login-qr/index.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/liff-verify/index.go",
+      "use": "@vercel/go"
+    },
+    {
       "src": "api/callback.go",
       "use": "@vercel/go"
     },
@@ -24,9 +32,31 @@
     {
       "src": "api/send-receipt/index.go",
       "use": "@vercel/go"
+    },
+    {
+      "src": "api/member/profile/index.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/member/points/index.go",
+      "use": "@vercel/go"
+    },
+    {
+      "src": "api/member/history/index.go",
+      "use": "@vercel/go"
     }
   ],
   "routes": [
+    {
+      "src": "/api/login/qr",
+      "dest": "/api/login-qr/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/login/liff-verify",
+      "dest": "/api/liff-verify/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
     {
       "src": "/api/login/code",
       "dest": "/api/login/code.go",
@@ -60,6 +90,21 @@
     {
       "src": "/api/send-receipt",
       "dest": "/api/send-receipt/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/member/profile",
+      "dest": "/api/member/profile/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/member/points",
+      "dest": "/api/member/points/index.go",
+      "methods": ["POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/member/history",
+      "dest": "/api/member/history/index.go",
       "methods": ["POST", "OPTIONS"]
     }
   ],
