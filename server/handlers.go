@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"bcmemberapi/ai"
 	"bcmemberapi/store"
@@ -169,4 +170,106 @@ func (s *Server) replyText(token, text string) {
 	if _, err := s.Bot.ReplyMessage(token, linebot.NewTextMessage(text)).Do(); err != nil {
 		log.Printf("Error replying to user: %v", err)
 	}
+}
+
+// HandleGenerateQR handles POST /api/login/qr - generates QR session for LIFF login
+func (s *Server) HandleGenerateQR(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ShopID string `json:"shop_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	sessionID, err := s.Store.GenerateQRSession(r.Context(), req.ShopID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	liffURL := s.Config.LiffURL + "?session=" + sessionID
+
+	response := map[string]interface{}{
+		"session_id": sessionID,
+		"liff_url":   liffURL,
+		"expires_at": time.Now().Add(5 * time.Minute),
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleLiffVerify handles POST /api/login/liff-verify - verifies LIFF login
+func (s *Server) HandleLiffVerify(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		SessionID   string `json:"session_id"`
+		IDToken     string `json:"id_token"`
+		UserID      string `json:"user_id"`
+		DisplayName string `json:"display_name"`
+		PictureURL  string `json:"picture_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid request body",
+		})
+		return
+	}
+
+	if req.SessionID == "" || req.UserID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "session_id and user_id are required",
+		})
+		return
+	}
+
+	err := s.Store.VerifyLiffSession(r.Context(), req.SessionID, req.UserID, req.DisplayName, req.PictureURL)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid or expired session",
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "เชื่อมต่อสำเร็จ",
+	})
 }

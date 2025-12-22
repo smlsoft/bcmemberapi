@@ -14,6 +14,8 @@ type Config struct {
 	LineChannelSecret string
 	LineChannelToken  string
 	GeminiAPIKey      string
+	LiffID            string
+	LiffURL           string
 }
 
 // Load loads configuration from environment variables
@@ -21,12 +23,15 @@ func Load() (*Config, error) {
 	// Try to load .env file (ignore error if not found)
 	_ = godotenv.Load()
 
+	liffID := getEnvOrDefault("LIFF_ID", "2008745223-8Ol0oVZk")
 	cfg := &Config{
 		Port:              getEnvOrDefault("PORT", "8080"),
 		MongoURI:          os.Getenv("MONGODB_URI"),
 		LineChannelSecret: os.Getenv("LINE_CHANNEL_SECRET"),
 		LineChannelToken:  os.Getenv("LINE_CHANNEL_TOKEN"),
 		GeminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
+		LiffID:            liffID,
+		LiffURL:           "https://liff.line.me/" + liffID,
 	}
 
 	if err := cfg.Validate(); err != nil {

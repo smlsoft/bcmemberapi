@@ -14,6 +14,7 @@ import (
 type LoginCode struct {
 	Code        string    `bson:"code" json:"code"`
 	ShopID      string    `bson:"shop_id,omitempty" json:"shop_id,omitempty"`
+	Type        string    `bson:"type" json:"type"`     // "code" or "qr"
 	Status      string    `bson:"status" json:"status"` // "pending", "success"
 	LineUserID  string    `bson:"line_user_id,omitempty" json:"line_user_id,omitempty"`
 	DisplayName string    `bson:"display_name,omitempty" json:"display_name,omitempty"`
@@ -339,4 +340,56 @@ func (s *Store) RecalculatePoints(ctx context.Context, lineUID, shopID string) (
 	}
 
 	return count, nil
+}
+
+// GenerateQRSession generates a random session string for QR login
+func (s *Store) GenerateQRSession(ctx context.Context, shopID string) (string, error) {
+	// Generate 16-character alphanumeric session ID
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	session := make([]byte, 16)
+	for i := range session {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		session[i] = charset[n.Int64()]
+	}
+
+	loginCode := LoginCode{
+		Code:      string(session),
+		ShopID:    shopID,
+		Type:      "qr",
+		Status:    "pending",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+
+	_, err := s.coll.InsertOne(ctx, loginCode)
+	if err != nil {
+		return "", err
+	}
+	return string(session), nil
+}
+
+// VerifyLiffSession verifies and updates a QR session from LIFF
+func (s *Store) VerifyLiffSession(ctx context.Context, sessionID, userID, displayName, pictureURL string) error {
+	filter := bson.M{
+		"code":       sessionID,
+		"type":       "qr",
+		"status":     "pending",
+		"expires_at": bson.M{"$gt": time.Now()},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status":       "success",
+			"line_user_id": userID,
+			"display_name": displayName,
+			"picture_url":  pictureURL,
+		},
+	}
+	res, err := s.coll.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+	if res.ModifiedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }
