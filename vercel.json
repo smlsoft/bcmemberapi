@@ -64,7 +64,7 @@
     {
       "src": "/api/login/qr",
       "dest": "/api/login-qr/index.go",
-      "methods": ["POST", "OPTIONS"]
+      "methods": ["GET", "POST", "OPTIONS"]
     },
     {
       "src": "/api/login/liff-verify",

@@ -102,9 +102,17 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build LIFF URL
+	liffURL := os.Getenv("LIFF_URL")
+	if liffURL == "" {
+		liffURL = "https://liff.line.me/2006aborh-YLgZNqqB"
+	}
+	liffURL = liffURL + "?session=" + sessionID
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":    true,
 		"session_id": sessionID,
+		"liff_url":   liffURL,
 		"type":       req.Type,
 		"expires_at": time.Now().Add(5 * time.Minute).Unix(),
 	})

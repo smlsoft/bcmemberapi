@@ -127,6 +127,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 			"totalShops":        0,
 			"pointsEarnedToday": 0,
 			"pointsUsedToday":   0,
+			"shopsStats":        []interface{}{},
 		})
 		return
 	}
@@ -137,6 +138,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 		"totalShops":        stats.TotalShops,
 		"pointsEarnedToday": stats.PointsEarnedToday,
 		"pointsUsedToday":   stats.PointsUsedToday,
+		"shopsStats":        stats.ShopsStats,
 	})
 }
 

@@ -432,22 +432,15 @@ type DashboardStats struct {
 	TotalShops         int
 	PointsEarnedToday  int
 	PointsUsedToday    int
-	WeeklyData         []WeeklyDataPoint
-	TopShops           []TopShopData
+	ShopsStats         []ShopPointsStats
 	RecentTransactions []RecentTxData
 }
 
-type WeeklyDataPoint struct {
-	Label  string
-	Earned int
-	Used   int
-}
-
-type TopShopData struct {
-	ID      string
-	Name    string
-	Members int
-	Points  int
+type ShopPointsStats struct {
+	ShopID       string `json:"shop_id" bson:"_id"`
+	ShopName     string `json:"shop_name" bson:"shop_name"`
+	PointsEarned int    `json:"points_earned" bson:"points_earned"`
+	PointsUsed   int    `json:"points_used" bson:"points_used"`
 }
 
 type RecentTxData struct {
@@ -465,7 +458,7 @@ type MemberData struct {
 	LineUID       string
 	DisplayName   string
 	PictureURL    string
-	Shop          string
+	ShopsVisited  []string
 	CurrentPoints int
 	TotalEarned   int
 	JoinedAt      string
@@ -558,6 +551,30 @@ func GetDashboardStats() (*DashboardStats, error) {
 		for _, tx := range transactions {
 			stats.PointsEarnedToday += int(tx.GetPoint)
 			stats.PointsUsedToday += int(tx.UsePoint)
+		}
+	}
+
+	// Get shop points stats - aggregate by shop_id, sorted by points_earned desc
+	pipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":           "$shop_id",
+				"shop_name":     bson.M{"$first": "$shop_name"},
+				"points_earned": bson.M{"$sum": "$get_point"},
+				"points_used":   bson.M{"$sum": "$use_point"},
+			},
+		},
+		{
+			"$sort": bson.M{"points_earned": -1},
+		},
+	}
+
+	aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline)
+	if err == nil {
+		defer aggCursor.Close(ctx)
+		var shopStats []ShopPointsStats
+		if err := aggCursor.All(ctx, &shopStats); err == nil {
+			stats.ShopsStats = shopStats
 		}
 	}
 
@@ -793,14 +810,14 @@ func generateRandomString(length int) string {
 	return string(b)
 }
 
-// GetAllMembers returns all members for admin view
+// GetAllMembers returns all members for admin view with shops visited and total earned
 func GetAllMembers() ([]MemberData, error) {
 	s := GetGlobalStore()
 	if s == nil {
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	cursor, err := s.membersColl.Find(ctx, bson.M{})
@@ -814,19 +831,56 @@ func GetAllMembers() ([]MemberData, error) {
 		return nil, err
 	}
 
+	// Build a map of line_uid -> member data
 	result := make([]MemberData, 0, len(members))
-	for _, m := range members {
-		result = append(result, MemberData{
+	memberMap := make(map[string]*MemberData)
+
+	for i, m := range members {
+		md := MemberData{
 			ID:            m.LineUID,
 			LineUID:       m.LineUID,
 			DisplayName:   m.DisplayName,
 			PictureURL:    m.PictureURL,
-			Shop:          "Central", // Central system - no shop specific
+			ShopsVisited:  []string{},
 			CurrentPoints: int(m.PointBalance),
-			TotalEarned:   int(m.PointBalance), // Simplified
+			TotalEarned:   0,
 			JoinedAt:      m.CreatedAt.Format("2 Jan 2006"),
 			LastActive:    m.UpdatedAt.Format("2 Jan 2006"),
-		})
+		}
+		result = append(result, md)
+		memberMap[m.LineUID] = &result[i]
+	}
+
+	// Aggregate transactions to get shops visited and total earned per member
+	pipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":          "$line_uid",
+				"shops":        bson.M{"$addToSet": "$shop_name"},
+				"total_earned": bson.M{"$sum": "$get_point"},
+			},
+		},
+	}
+
+	aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline)
+	if err == nil {
+		defer aggCursor.Close(ctx)
+
+		type MemberAgg struct {
+			LineUID     string   `bson:"_id"`
+			Shops       []string `bson:"shops"`
+			TotalEarned float64  `bson:"total_earned"`
+		}
+
+		var aggResults []MemberAgg
+		if err := aggCursor.All(ctx, &aggResults); err == nil {
+			for _, agg := range aggResults {
+				if md, ok := memberMap[agg.LineUID]; ok {
+					md.ShopsVisited = agg.Shops
+					md.TotalEarned = int(agg.TotalEarned)
+				}
+			}
+		}
 	}
 
 	return result, nil
