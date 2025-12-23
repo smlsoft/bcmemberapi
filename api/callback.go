@@ -175,35 +175,24 @@ func replyText(bot *linebot.Client, token, text string) {
 	}
 }
 
-// getPointSummary retrieves point summary from members collection
+// getPointSummary retrieves central point summary from members collection
 func getPointSummary(ctx context.Context, lineUID string, st *store.Store) string {
-	// Get members by LINE UID
-	members, err := st.GetMembersByLineUID(ctx, lineUID)
+	// Get central member record
+	member, err := st.GetMemberByLineUID(ctx, lineUID)
 	if err != nil {
-		log.Printf("ERROR: GetMembersByLineUID failed: %v", err)
+		log.Printf("ERROR: GetMemberByLineUID failed: %v", err)
 		return "❌ เกิดข้อผิดพลาดในการดึงข้อมูลแต้มสะสม"
 	}
 
 	// No points found
-	if len(members) == 0 {
+	if member == nil {
 		return "📋 คุณยังไม่มีแต้มสะสม"
 	}
 
 	// Build response message
 	var sb strings.Builder
 	sb.WriteString("✨ แต้มสะสมของคุณ\n\n")
-
-	var totalPoints float64
-	for _, m := range members {
-		shopName := m.ShopName
-		if shopName == "" {
-			shopName = m.ShopID
-		}
-		sb.WriteString(fmt.Sprintf("🏪 %s: %.0f แต้ม\n", shopName, m.PointBalance))
-		totalPoints += m.PointBalance
-	}
-
-	sb.WriteString(fmt.Sprintf("\n📊 รวมทั้งหมด: %.0f แต้ม", totalPoints))
+	sb.WriteString(fmt.Sprintf("💰 แต้มรวม: %.0f แต้ม", member.PointBalance))
 
 	return sb.String()
 }

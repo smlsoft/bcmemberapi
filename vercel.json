@@ -14,6 +14,10 @@
       "use": "@vercel/go"
     },
     {
+      "src": "api/admin/index.go",
+      "use": "@vercel/go"
+    },
+    {
       "src": "api/liff-verify/index.go",
       "use": "@vercel/go"
     },
@@ -47,6 +51,16 @@
     }
   ],
   "routes": [
+    {
+      "src": "/api/login-qr/(generate|status|verify)",
+      "dest": "/api/login-qr/index.go?action=$1",
+      "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/admin/(login|dashboard|shops|members|transactions)",
+      "dest": "/api/admin/index.go?action=$1",
+      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    },
     {
       "src": "/api/login/qr",
       "dest": "/api/login-qr/index.go",
@@ -83,6 +97,11 @@
       "methods": ["POST", "OPTIONS"]
     },
     {
+      "src": "/api/calculate-point",
+      "dest": "/api/saleinvoice/index.go",
+      "methods": ["GET", "OPTIONS"]
+    },
+    {
       "src": "/api/recal-points",
       "dest": "/api/recal-points/index.go",
       "methods": ["POST", "OPTIONS"]
@@ -105,7 +124,7 @@
     {
       "src": "/api/member/history",
       "dest": "/api/member/history/index.go",
-      "methods": ["POST", "OPTIONS"]
+      "methods": ["GET", "POST", "OPTIONS"]
     }
   ],
   "env": {

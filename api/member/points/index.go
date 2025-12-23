@@ -16,19 +16,12 @@ type PointsRequest struct {
 	IDToken string `json:"id_token"`
 }
 
-type ShopPoints struct {
-	ShopID   string  `json:"shop_id"`
-	ShopName string  `json:"shop_name"`
-	Points   float64 `json:"points"`
-}
-
 type PointsResponse struct {
-	Success     bool         `json:"success"`
-	Points      float64      `json:"points"`
-	TotalEarned float64      `json:"total_earned"`
-	TotalUsed   float64      `json:"total_used"`
-	ShopPoints  []ShopPoints `json:"shop_points,omitempty"`
-	Error       string       `json:"error,omitempty"`
+	Success     bool    `json:"success"`
+	Points      float64 `json:"points"`
+	TotalEarned float64 `json:"total_earned"`
+	TotalUsed   float64 `json:"total_used"`
+	Error       string  `json:"error,omitempty"`
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -92,10 +85,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get all members for this LINE user (across all shops)
-	members, err := st.GetMembersByLineUID(ctx, req.UserID)
+	// Get central member record for this LINE user
+	member, err := st.GetMemberByLineUID(ctx, req.UserID)
 	if err != nil {
-		log.Printf("ERROR: GetMembersByLineUID failed: %v", err)
+		log.Printf("ERROR: GetMemberByLineUID failed: %v", err)
 		json.NewEncoder(w).Encode(PointsResponse{
 			Success: false,
 			Error:   "Failed to get member data",
@@ -109,26 +102,17 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ERROR: GetPointTransactionsByLineUID failed: %v", err)
 	}
 
-	// Calculate totals
-	var totalPoints, totalEarned, totalUsed float64
-	shopPointsList := make([]ShopPoints, 0)
-
-	for _, m := range members {
-		totalPoints += m.PointBalance
-		shopName := m.ShopName
-		if shopName == "" {
-			shopName = m.ShopID
-		}
-		shopPointsList = append(shopPointsList, ShopPoints{
-			ShopID:   m.ShopID,
-			ShopName: shopName,
-			Points:   m.PointBalance,
-		})
-	}
-
+	// Calculate totals from transactions
+	var totalEarned, totalUsed float64
 	for _, t := range transactions {
 		totalEarned += t.GetPoint
 		totalUsed += t.UsePoint
+	}
+
+	// Get central point balance
+	var totalPoints float64
+	if member != nil {
+		totalPoints = member.PointBalance
 	}
 
 	json.NewEncoder(w).Encode(PointsResponse{
@@ -136,6 +120,5 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		Points:      totalPoints,
 		TotalEarned: totalEarned,
 		TotalUsed:   totalUsed,
-		ShopPoints:  shopPointsList,
 	})
 }

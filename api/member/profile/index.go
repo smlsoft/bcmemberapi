@@ -88,10 +88,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get all members for this LINE user (across all shops)
-	members, err := st.GetMembersByLineUID(ctx, req.UserID)
+	// Get central member record for this LINE user
+	member, err := st.GetMemberByLineUID(ctx, req.UserID)
 	if err != nil {
-		log.Printf("ERROR: GetMembersByLineUID failed: %v", err)
+		log.Printf("ERROR: GetMemberByLineUID failed: %v", err)
 		json.NewEncoder(w).Encode(MemberProfileResponse{
 			Success: false,
 			Error:   "Failed to get member data",
@@ -99,17 +99,13 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Calculate total points from all shops
+	// Get point balance and profile
 	var totalPoints float64
 	var displayName, pictureURL string
-	for _, m := range members {
-		totalPoints += m.PointBalance
-		if displayName == "" && m.DisplayName != "" {
-			displayName = m.DisplayName
-		}
-		if pictureURL == "" && m.PictureURL != "" {
-			pictureURL = m.PictureURL
-		}
+	if member != nil {
+		totalPoints = member.PointBalance
+		displayName = member.DisplayName
+		pictureURL = member.PictureURL
 	}
 
 	// Generate member code from userId
@@ -121,6 +117,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		MemberCode:  memberCode,
 		DisplayName: displayName,
 		PictureURL:  pictureURL,
-		ShopCount:   len(members),
+		ShopCount:   1, // Central system
 	})
 }

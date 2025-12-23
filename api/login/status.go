@@ -87,9 +87,9 @@ func StatusHandler(w http.ResponseWriter, r *http.Request) {
 		PointBalance: 0,
 	}
 
-	// Get point balance if login is successful and has shop_id
-	if result.Status == "success" && result.LineUserID != "" && result.ShopID != "" {
-		member, err := st.GetMemberByLineUIDAndShopID(ctx, result.LineUserID, result.ShopID)
+	// Get central point balance if login is successful
+	if result.Status == "success" && result.LineUserID != "" {
+		member, err := st.GetMemberByLineUID(ctx, result.LineUserID)
 		if err == nil && member != nil {
 			response.PointBalance = member.PointBalance
 		}
