@@ -61,6 +61,24 @@ type Store struct {
 	membersColl    *mongo.Collection
 }
 
+// formatTimeAgo returns a human-readable time difference in Thai
+func formatTimeAgo(t time.Time) string {
+	diff := time.Since(t)
+
+	if diff < time.Minute {
+		return "เมื่อกี้"
+	} else if diff < time.Hour {
+		mins := int(diff.Minutes())
+		return fmt.Sprintf("%d นาทีที่แล้ว", mins)
+	} else if diff < 24*time.Hour {
+		hours := int(diff.Hours())
+		return fmt.Sprintf("%d ชั่วโมงที่แล้ว", hours)
+	} else {
+		days := int(diff.Hours() / 24)
+		return fmt.Sprintf("%d วันที่แล้ว", days)
+	}
+}
+
 func NewStore(uri string) (*Store, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -517,22 +535,32 @@ func SaveAdmin(lineUID, displayName, pictureURL, role string) error {
 
 // GetDashboardStats returns dashboard statistics
 func GetDashboardStats() (*DashboardStats, error) {
-	s := GetGlobalStore()
-	if s == nil {
-		return nil, nil
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		return nil, fmt.Errorf("MONGODB_URI not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+	defer client.Disconnect(ctx)
+
+	db := client.Database("bcmember")
+	membersColl := db.Collection("members")
+	shopsColl := db.Collection("shops")
+	pointTransColl := db.Collection("point_transactions")
 
 	stats := &DashboardStats{}
 
 	// Count members
-	memberCount, _ := s.membersColl.CountDocuments(ctx, bson.M{})
+	memberCount, _ := membersColl.CountDocuments(ctx, bson.M{})
 	stats.TotalMembers = int(memberCount)
 
 	// Count shops
-	shopsColl := s.client.Database("bcmember").Collection("shops")
 	shopCount, _ := shopsColl.CountDocuments(ctx, bson.M{})
 	stats.TotalShops = int(shopCount)
 
@@ -542,7 +570,7 @@ func GetDashboardStats() (*DashboardStats, error) {
 		"created_at": bson.M{"$gte": today},
 	}
 
-	cursor, err := s.pointTransColl.Find(ctx, todayFilter)
+	cursor, err := pointTransColl.Find(ctx, todayFilter)
 	if err == nil {
 		defer cursor.Close(ctx)
 		var transactions []PointTransaction
@@ -569,12 +597,62 @@ func GetDashboardStats() (*DashboardStats, error) {
 		},
 	}
 
-	aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline)
+	aggCursor, err := pointTransColl.Aggregate(ctx, pipeline)
 	if err == nil {
 		defer aggCursor.Close(ctx)
 		var shopStats []ShopPointsStats
 		if err := aggCursor.All(ctx, &shopStats); err == nil {
 			stats.ShopsStats = shopStats
+		}
+	}
+
+	// Get recent transactions (last 10)
+	recentOpts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(10)
+	recentCursor, err := pointTransColl.Find(ctx, bson.M{}, recentOpts)
+	if err == nil {
+		defer recentCursor.Close(ctx)
+		var recentTxs []PointTransaction
+		if err := recentCursor.All(ctx, &recentTxs); err == nil {
+			// Get member info for each transaction
+			for _, tx := range recentTxs {
+				txType := "earn"
+				points := int(tx.GetPoint)
+				if tx.UsePoint > 0 {
+					txType = "redeem"
+					points = int(tx.UsePoint)
+				}
+
+				// Get member info
+				memberName := "สมาชิก"
+				memberPicture := "https://via.placeholder.com/32"
+				var member Member
+				if err := membersColl.FindOne(ctx, bson.M{"line_uid": tx.LineUID}).Decode(&member); err == nil {
+					if member.DisplayName != "" {
+						memberName = member.DisplayName
+					} else if len(tx.LineUID) > 4 {
+						memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
+					}
+					if member.PictureURL != "" {
+						memberPicture = member.PictureURL
+					}
+				} else if len(tx.LineUID) > 4 {
+					// Member not found, show partial line_uid
+					memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
+				}
+
+				// Format time ago
+				timeAgo := formatTimeAgo(tx.CreatedAt)
+
+				stats.RecentTransactions = append(stats.RecentTransactions, RecentTxData{
+					ID:            tx.DocNo,
+					MemberName:    memberName,
+					MemberPicture: memberPicture,
+					Shop:          tx.ShopName,
+					Type:          txType,
+					Points:        points,
+					Time:          timeAgo,
+				})
+			}
 		}
 	}
 
@@ -812,15 +890,25 @@ func generateRandomString(length int) string {
 
 // GetAllMembers returns all members for admin view with shops visited and total earned
 func GetAllMembers() ([]MemberData, error) {
-	s := GetGlobalStore()
-	if s == nil {
-		return nil, nil
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		return nil, fmt.Errorf("MONGODB_URI not set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cursor, err := s.membersColl.Find(ctx, bson.M{})
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+	defer client.Disconnect(ctx)
+
+	db := client.Database("bcmember")
+	membersColl := db.Collection("members")
+	pointTransColl := db.Collection("point_transactions")
+
+	cursor, err := membersColl.Find(ctx, bson.M{})
 	if err != nil {
 		return nil, err
 	}
@@ -862,7 +950,7 @@ func GetAllMembers() ([]MemberData, error) {
 		},
 	}
 
-	aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline)
+	aggCursor, err := pointTransColl.Aggregate(ctx, pipeline)
 	if err == nil {
 		defer aggCursor.Close(ctx)
 
@@ -888,16 +976,24 @@ func GetAllMembers() ([]MemberData, error) {
 
 // GetAllTransactions returns all transactions for admin view
 func GetAllTransactions() ([]TransactionData, *TodayStatsData, error) {
-	s := GetGlobalStore()
-	if s == nil {
-		return nil, nil, nil
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		return nil, nil, fmt.Errorf("MONGODB_URI not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+	defer client.Disconnect(ctx)
+
+	pointTransColl := client.Database("bcmember").Collection("point_transactions")
+
 	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(100)
-	cursor, err := s.pointTransColl.Find(ctx, bson.M{}, opts)
+	cursor, err := pointTransColl.Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, nil, err
 	}

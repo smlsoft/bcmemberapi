@@ -125,6 +125,16 @@
       "src": "/api/member/history",
       "dest": "/api/member/history/index.go",
       "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/member/history",
+      "dest": "/api/member/history/index.go",
+      "methods": ["GET", "POST", "OPTIONS"]
+    },
+    {
+      "src": "/api/member/qr",
+      "dest": "/api/login-qr/index.go?action=kiosk",
+      "methods": ["GET", "POST", "OPTIONS"]
     }
   ],
   "env": {

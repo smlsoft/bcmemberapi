@@ -133,12 +133,13 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":           true,
-		"totalMembers":      stats.TotalMembers,
-		"totalShops":        stats.TotalShops,
-		"pointsEarnedToday": stats.PointsEarnedToday,
-		"pointsUsedToday":   stats.PointsUsedToday,
-		"shopsStats":        stats.ShopsStats,
+		"success":            true,
+		"totalMembers":       stats.TotalMembers,
+		"totalShops":         stats.TotalShops,
+		"pointsEarnedToday":  stats.PointsEarnedToday,
+		"pointsUsedToday":    stats.PointsUsedToday,
+		"shopsStats":         stats.ShopsStats,
+		"recentTransactions": stats.RecentTransactions,
 	})
 }
 

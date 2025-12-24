@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"bcmemberapi/store"
+
 	"github.com/line/line-bot-sdk-go/v7/linebot"
 )
 
@@ -43,16 +45,28 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify API Key
+	// Verify API Key - validate against shop's api_key in database
 	apiKey := r.Header.Get("X-API-Key")
-	if apiKey != "bcaicloudx" {
+	if apiKey == "" {
+		sendError(w, http.StatusUnauthorized, "API Key required")
+		return
+	}
+
+	// Validate API Key against shops collection
+	shop, err := store.GetShopByAPIKey(apiKey)
+	if err != nil {
+		log.Printf("ERROR: GetShopByAPIKey failed: %v", err)
+		sendError(w, http.StatusInternalServerError, "Failed to validate API Key")
+		return
+	}
+	if shop == nil {
 		sendError(w, http.StatusUnauthorized, "Invalid API Key")
 		return
 	}
 
 	// Parse request body
 	var req SendReceiptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if errParse := json.NewDecoder(r.Body).Decode(&req); errParse != nil {
 		sendError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
@@ -64,12 +78,14 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send LINE message
-	err := sendLineReceipt(req.LineUID, req.ImageURL)
-	if err != nil {
-		log.Printf("ERROR: sendLineReceipt failed: %v", err)
+	errSend := sendLineReceipt(req.LineUID, req.ImageURL)
+	if errSend != nil {
+		log.Printf("ERROR: sendLineReceipt failed for shop %s: %v", shop.Name, errSend)
 		sendError(w, http.StatusInternalServerError, "Failed to send receipt")
 		return
 	}
+
+	log.Printf("Receipt sent successfully: shop=%s, line_uid=%s", shop.Name, req.LineUID)
 
 	// Send success response
 	w.WriteHeader(http.StatusOK)
