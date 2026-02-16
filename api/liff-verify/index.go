@@ -93,6 +93,13 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update member profile on LIFF verify
+	if req.DisplayName != "" || req.PictureURL != "" {
+		if err := st.UpsertMember(ctx, req.UserID, req.DisplayName, req.PictureURL); err != nil {
+			println("Error upserting member on LIFF verify:", err.Error())
+		}
+	}
+
 	// Return success response
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{

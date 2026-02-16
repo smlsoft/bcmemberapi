@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -91,9 +92,10 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	st, err := store.NewStore(mongoURI)
 	if err != nil {
+		fmt.Printf("ERROR login-qr/generate: NewStore failed: %v\n", err)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
-			"error":   "Database connection failed",
+			"error":   "Database connection failed: " + err.Error(),
 		})
 		return
 	}
@@ -103,9 +105,10 @@ func handleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	sessionID, err := st.GenerateLoginSession(ctx, req.Type, req.ShopID)
 	if err != nil {
+		fmt.Printf("ERROR login-qr/generate: GenerateLoginSession failed: %v\n", err)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
-			"error":   "Failed to generate session",
+			"error":   "Failed to generate session: " + err.Error(),
 		})
 		return
 	}
@@ -279,6 +282,14 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 			"error":   "Failed to verify session",
 		})
 		return
+	}
+
+	// Upsert member with LINE profile (display_name + picture_url)
+	if req.DisplayName != "" || req.PictureURL != "" {
+		if err := st.UpsertMember(ctx, req.LineUserID, req.DisplayName, req.PictureURL); err != nil {
+			// Log but don't fail the verify
+			fmt.Printf("Error upserting member on verify: %v\n", err)
+		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{

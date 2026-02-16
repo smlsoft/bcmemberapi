@@ -126,6 +126,13 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update member profile on verify
+	if req.DisplayName != "" || req.PictureURL != "" {
+		if err := st.UpsertMember(ctx, req.LineUserID, req.DisplayName, req.PictureURL); err != nil {
+			println("Error upserting member on verify:", err.Error())
+		}
+	}
+
 	// Return success
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{

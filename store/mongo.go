@@ -472,15 +472,15 @@ type RecentTxData struct {
 }
 
 type MemberData struct {
-	ID            string
-	LineUID       string
-	DisplayName   string
-	PictureURL    string
-	ShopsVisited  []string
-	CurrentPoints int
-	TotalEarned   int
-	JoinedAt      string
-	LastActive    string
+	ID            string   `json:"id"`
+	LineUID       string   `json:"line_uid"`
+	DisplayName   string   `json:"display_name"`
+	PictureURL    string   `json:"picture_url"`
+	ShopsVisited  []string `json:"shops_visited"`
+	CurrentPoints int      `json:"current_points"`
+	TotalEarned   int      `json:"total_earned"`
+	JoinedAt      string   `json:"joined_at"`
+	LastActive    string   `json:"last_active"`
 }
 
 type TransactionData struct {

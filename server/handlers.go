@@ -70,13 +70,27 @@ func (s *Server) HandleLineCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, event := range events {
-		if event.Type == linebot.EventTypeMessage {
+		switch event.Type {
+		case linebot.EventTypeFollow:
+			// User added bot as friend - save their profile
+			s.handleFollowEvent(r, event)
+		case linebot.EventTypeMessage:
 			switch message := event.Message.(type) {
 			case *linebot.TextMessage:
 				s.handleTextMessage(r, event, message)
 			}
 		}
 	}
+}
+
+// handleFollowEvent saves member profile when user adds bot as friend
+func (s *Server) handleFollowEvent(r *http.Request, event *linebot.Event) {
+	userID := event.Source.UserID
+	displayName, pictureURL := s.getUserProfile(userID)
+	if err := s.Store.UpsertMember(r.Context(), userID, displayName, pictureURL); err != nil {
+		log.Printf("Error upserting member on follow: %v", err)
+	}
+	log.Printf("New follower: %s (%s)", displayName, userID)
 }
 
 // handleTextMessage processes text messages from LINE
@@ -105,12 +119,22 @@ func (s *Server) handleLoginCode(r *http.Request, event *linebot.Event, code, us
 	if err != nil {
 		s.replyText(event.ReplyToken, "Invalid or expired code.")
 	} else {
+		// Update member profile on login
+		if err := s.Store.UpsertMember(r.Context(), userID, displayName, pictureURL); err != nil {
+			log.Printf("Error upserting member on login code: %v", err)
+		}
 		s.replyText(event.ReplyToken, "Login Successful! You can now return to the website.")
 	}
 }
 
 // handleChatMessage processes general chat messages with AI
 func (s *Server) handleChatMessage(r *http.Request, event *linebot.Event, text, userID string) {
+	// Update member profile on each message
+	displayName, pictureURL := s.getUserProfile(userID)
+	if err := s.Store.UpsertMember(r.Context(), userID, displayName, pictureURL); err != nil {
+		log.Printf("Error upserting member: %v", err)
+	}
+
 	// Get chat history (last 6 messages = 3 conversation pairs to save AI tokens)
 	history, err := s.Store.GetChatHistory(r.Context(), userID, 6)
 	if err != nil {
@@ -266,6 +290,11 @@ func (s *Server) HandleLiffVerify(w http.ResponseWriter, r *http.Request) {
 			"error":   "Invalid or expired session",
 		})
 		return
+	}
+
+	// Update member profile on LIFF verify
+	if err := s.Store.UpsertMember(r.Context(), req.UserID, req.DisplayName, req.PictureURL); err != nil {
+		log.Printf("Error upserting member on LIFF verify: %v", err)
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
