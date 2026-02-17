@@ -585,6 +585,7 @@ type ShopPointsStats struct {
 
 type RecentTxData struct {
 	ID            string
+	MemberUID     string
 	MemberName    string
 	MemberPicture string
 	Shop          string
@@ -866,6 +867,7 @@ func GetDashboardStats() (*DashboardStats, error) {
 
 				stats.RecentTransactions = append(stats.RecentTransactions, RecentTxData{
 					ID:            tx.DocNo,
+					MemberUID:     tx.LineUID,
 					MemberName:    memberName,
 					MemberPicture: memberPicture,
 					Shop:          tx.ShopName,
@@ -900,6 +902,43 @@ func GetAllShops() ([]ShopData, error) {
 	var shops []ShopData
 	if err := cursor.All(ctx, &shops); err != nil {
 		return nil, err
+	}
+
+	// Compute member count and points per shop from point_transactions
+	// Use shop_name to match because shop_id in transactions is from POS (not MongoDB _id)
+	pipeline := []bson.M{
+		{
+			"$group": bson.M{
+				"_id":           "$shop_name",
+				"members":       bson.M{"$addToSet": "$line_uid"},
+				"points_earned": bson.M{"$sum": "$get_point"},
+				"points_used":   bson.M{"$sum": "$use_point"},
+			},
+		},
+	}
+	aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline)
+	if err == nil {
+		defer aggCursor.Close(ctx)
+		type shopAgg struct {
+			ShopName     string   `bson:"_id"`
+			Members      []string `bson:"members"`
+			PointsEarned float64  `bson:"points_earned"`
+			PointsUsed   float64  `bson:"points_used"`
+		}
+		statsMap := make(map[string]shopAgg)
+		for aggCursor.Next(ctx) {
+			var agg shopAgg
+			if err := aggCursor.Decode(&agg); err == nil {
+				statsMap[agg.ShopName] = agg
+			}
+		}
+		for i := range shops {
+			if agg, ok := statsMap[shops[i].Name]; ok {
+				shops[i].Members = len(agg.Members)
+				shops[i].PointsEarned = int(agg.PointsEarned)
+				shops[i].PointsUsed = int(agg.PointsUsed)
+			}
+		}
 	}
 
 	return shops, nil
