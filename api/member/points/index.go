@@ -21,6 +21,7 @@ type PointsResponse struct {
 	Points      float64 `json:"points"`
 	TotalEarned float64 `json:"total_earned"`
 	TotalUsed   float64 `json:"total_used"`
+	Tier        string  `json:"tier"`
 	Error       string  `json:"error,omitempty"`
 }
 
@@ -109,10 +110,19 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		totalUsed += t.UsePoint
 	}
 
-	// Get central point balance
+	// Get central point balance and tier
 	var totalPoints float64
+	var tier string
 	if member != nil {
 		totalPoints = member.PointBalance
+		tier = member.Tier
+		// Use stored total_earned if available (more accurate than transaction sum)
+		if member.TotalEarned > 0 {
+			totalEarned = member.TotalEarned
+		}
+	}
+	if tier == "" {
+		tier = store.CalculateTier(totalEarned)
 	}
 
 	json.NewEncoder(w).Encode(PointsResponse{
@@ -120,5 +130,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		Points:      totalPoints,
 		TotalEarned: totalEarned,
 		TotalUsed:   totalUsed,
+		Tier:        tier,
 	})
 }

@@ -57,7 +57,7 @@
       "methods": ["GET", "POST", "OPTIONS"]
     },
     {
-      "src": "/api/admin/(login|dashboard|shops|members|transactions)",
+      "src": "/api/admin/(login|dashboard|shops|members|transactions|audit_logs|settings|admins)",
       "dest": "/api/admin/index.go?action=$1",
       "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
     },

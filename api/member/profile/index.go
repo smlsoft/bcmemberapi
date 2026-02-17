@@ -23,6 +23,7 @@ type MemberProfileResponse struct {
 	MemberCode  string  `json:"member_code"`
 	DisplayName string  `json:"display_name,omitempty"`
 	PictureURL  string  `json:"picture_url,omitempty"`
+	Tier        string  `json:"tier"`
 	ShopCount   int     `json:"shop_count"`
 	Error       string  `json:"error,omitempty"`
 }
@@ -101,11 +102,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	// Get point balance and profile
 	var totalPoints float64
-	var displayName, pictureURL string
+	var displayName, pictureURL, tier string
 	if member != nil {
 		totalPoints = member.PointBalance
 		displayName = member.DisplayName
 		pictureURL = member.PictureURL
+		tier = member.Tier
+	}
+	if tier == "" {
+		tier = "Standard"
 	}
 
 	// Generate member code from userId
@@ -117,6 +122,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		MemberCode:  memberCode,
 		DisplayName: displayName,
 		PictureURL:  pictureURL,
+		Tier:        tier,
 		ShopCount:   1, // Central system
 	})
 }

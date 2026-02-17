@@ -14,12 +14,14 @@ import (
 
 // SaleInvoiceRequest represents the request body
 type SaleInvoiceRequest struct {
-	LineUID  string  `json:"line_uid"`
-	ShopID   string  `json:"shop_id"` // External ID from POS system
-	DocNo    string  `json:"doc_no"`
-	Amount   float64 `json:"amount"`    // ยอดซื้อ (ใหม่) - API จะคำนวณแต้มให้
-	GetPoint float64 `json:"get_point"` // (เดิม) backward compatible - ถ้าส่งมาจะใช้ค่านี้
-	UsePoint float64 `json:"use_point"`
+	LineUID     string  `json:"line_uid"`
+	ShopID      string  `json:"shop_id"` // External ID from POS system
+	DocNo       string  `json:"doc_no"`
+	Amount      float64 `json:"amount"`       // ยอดซื้อ (ใหม่) - API จะคำนวณแต้มให้
+	GetPoint    float64 `json:"get_point"`    // (เดิม) backward compatible - ถ้าส่งมาจะใช้ค่านี้
+	UsePoint    float64 `json:"use_point"`
+	DisplayName string  `json:"display_name"` // ชื่อสมาชิก (optional)
+	PictureURL  string  `json:"picture_url"`  // รูปโปรไฟล์ (optional)
 }
 
 // SaleInvoiceResponse represents the response
@@ -34,6 +36,7 @@ type SaleInvoiceResponse struct {
 		UsePoint     float64 `json:"use_point"`
 		PointBalance float64 `json:"point_balance"`
 		ShopName     string  `json:"shop_name"`
+		Tier         string  `json:"tier"`
 	} `json:"data,omitempty"`
 }
 
@@ -278,13 +281,18 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 	// 1. Save point transaction (records which shop for tracking)
 	err = st.SavePointTransaction(ctx, req.LineUID, req.ShopID, shopName, req.DocNo, getPoint, req.UsePoint)
 	if err != nil {
+		if err == store.ErrDuplicateTransaction {
+			log.Printf("WARN: Duplicate transaction doc_no=%s shop_id=%s", req.DocNo, req.ShopID)
+			sendError(w, http.StatusConflict, "Duplicate transaction: doc_no already exists")
+			return
+		}
 		log.Printf("ERROR: SavePointTransaction failed: %v", err)
 		sendError(w, http.StatusInternalServerError, "Failed to save transaction")
 		return
 	}
 
-	// 2. Upsert central member (create if not exists)
-	err = st.UpsertMember(ctx, req.LineUID, "", "")
+	// 2. Upsert central member (create if not exists, update name/picture if provided)
+	err = st.UpsertMember(ctx, req.LineUID, req.DisplayName, req.PictureURL)
 	if err != nil {
 		log.Printf("ERROR: UpsertMember failed: %v", err)
 		// Continue anyway
@@ -292,12 +300,13 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Update central member points
 	pointChange := getPoint - req.UsePoint
-	newBalance, err := st.UpdateMemberPoints(ctx, req.LineUID, pointChange)
+	newBalance, newTier, err := st.UpdateMemberPoints(ctx, req.LineUID, pointChange, getPoint)
 	if err != nil {
 		log.Printf("ERROR: UpdateMemberPoints failed: %v", err)
 		// Try to recalculate
 		st.RecalculatePoints(ctx, req.LineUID, "")
 		newBalance = 0
+		newTier = "Standard"
 	}
 
 	// Send success response
@@ -312,6 +321,7 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 			UsePoint     float64 `json:"use_point"`
 			PointBalance float64 `json:"point_balance"`
 			ShopName     string  `json:"shop_name"`
+			Tier         string  `json:"tier"`
 		}{
 			DocNo:        req.DocNo,
 			Amount:       req.Amount,
@@ -319,6 +329,7 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 			UsePoint:     req.UsePoint,
 			PointBalance: newBalance,
 			ShopName:     shopName,
+			Tier:         newTier,
 		},
 	})
 }

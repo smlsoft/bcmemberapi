@@ -49,8 +49,44 @@ type Member struct {
 	DisplayName  string    `bson:"display_name" json:"display_name"`
 	PictureURL   string    `bson:"picture_url" json:"picture_url"`
 	PointBalance float64   `bson:"point_balance" json:"point_balance"`
+	TotalEarned  float64   `bson:"total_earned" json:"total_earned"`
+	Tier         string    `bson:"tier" json:"tier"`
 	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
 	UpdatedAt    time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// AuditLog represents an admin action log entry
+type AuditLog struct {
+	AdminLineUID string    `bson:"admin_line_uid" json:"admin_line_uid"`
+	AdminName    string    `bson:"admin_name" json:"admin_name"`
+	Action       string    `bson:"action" json:"action"`
+	TargetType   string    `bson:"target_type" json:"target_type"`
+	TargetID     string    `bson:"target_id" json:"target_id"`
+	Details      string    `bson:"details" json:"details"`
+	CreatedAt    time.Time `bson:"created_at" json:"created_at"`
+}
+
+// AuditLogFilter for querying audit logs
+type AuditLogFilter struct {
+	Action    string
+	StartDate string
+	EndDate   string
+	Page      int
+	PageSize  int
+}
+
+// CalculateTier returns the tier name based on lifetime total earned points
+func CalculateTier(totalEarned float64) string {
+	switch {
+	case totalEarned >= 5000:
+		return "Platinum"
+	case totalEarned >= 2000:
+		return "Gold"
+	case totalEarned >= 500:
+		return "Silver"
+	default:
+		return "Standard"
+	}
 }
 
 type Store struct {
@@ -94,13 +130,53 @@ func NewStore(uri string) (*Store, error) {
 	pointTransColl := db.Collection("point_transactions")
 	membersColl := db.Collection("members")
 
-	return &Store{
+	s := &Store{
 		client:         client,
 		coll:           coll,
 		chatHistColl:   chatHistColl,
 		pointTransColl: pointTransColl,
 		membersColl:    membersColl,
-	}, nil
+	}
+
+	// Ensure indexes (runs once, idempotent)
+	s.ensureIndexes(ctx)
+
+	return s, nil
+}
+
+// ensureIndexes creates necessary indexes for data integrity
+func (s *Store) ensureIndexes(ctx context.Context) {
+	// Unique index on doc_no + shop_id in point_transactions to prevent duplicates
+	_, err := s.pointTransColl.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "doc_no", Value: 1},
+			{Key: "shop_id", Value: 1},
+		},
+		Options: options.Index().SetUnique(true).SetName("idx_doc_no_shop_id_unique"),
+	})
+	if err != nil {
+		// Log but don't fail - index may already exist
+		fmt.Printf("INFO: ensure index doc_no+shop_id: %v\n", err)
+	}
+
+	// Index on line_uid in members for fast lookup
+	_, err = s.membersColl.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "line_uid", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("idx_line_uid_unique"),
+	})
+	if err != nil {
+		fmt.Printf("INFO: ensure index line_uid: %v\n", err)
+	}
+
+	// Index on created_at in audit_logs for sorting and date range queries
+	auditLogsColl := s.client.Database("bcmember").Collection("audit_logs")
+	_, err = auditLogsColl.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "created_at", Value: -1}},
+		Options: options.Index().SetName("idx_audit_logs_created_at"),
+	})
+	if err != nil {
+		fmt.Printf("INFO: ensure index audit_logs created_at: %v\n", err)
+	}
 }
 
 func (s *Store) GenerateCode(ctx context.Context, shopID string) (string, error) {
@@ -196,7 +272,11 @@ func (s *Store) GetChatHistory(ctx context.Context, userID string, limit int64) 
 	return messages, nil
 }
 
+// ErrDuplicateTransaction indicates a duplicate doc_no + shop_id
+var ErrDuplicateTransaction = fmt.Errorf("duplicate transaction")
+
 // SavePointTransaction saves a point transaction to the database
+// Returns ErrDuplicateTransaction if doc_no + shop_id already exists
 func (s *Store) SavePointTransaction(ctx context.Context, lineUID, shopID, shopName, docNo string, getPoint, usePoint float64) error {
 	trans := PointTransaction{
 		LineUID:   lineUID,
@@ -208,7 +288,14 @@ func (s *Store) SavePointTransaction(ctx context.Context, lineUID, shopID, shopN
 		CreatedAt: time.Now(),
 	}
 	_, err := s.pointTransColl.InsertOne(ctx, trans)
-	return err
+	if err != nil {
+		// Check for duplicate key error
+		if mongo.IsDuplicateKeyError(err) {
+			return ErrDuplicateTransaction
+		}
+		return err
+	}
+	return nil
 }
 
 // UpsertMember creates or updates a central member record (not per-shop)
@@ -225,6 +312,8 @@ func (s *Store) UpsertMember(ctx context.Context, lineUID, displayName, pictureU
 			"display_name":  displayName,
 			"picture_url":   pictureURL,
 			"point_balance": 0,
+			"total_earned":  0,
+			"tier":          "Standard",
 			"created_at":    time.Now(),
 		},
 	}
@@ -240,13 +329,17 @@ func (s *Store) UpsertMember(ctx context.Context, lineUID, displayName, pictureU
 	return err
 }
 
-// UpdateMemberPoints updates a member's central point balance
-func (s *Store) UpdateMemberPoints(ctx context.Context, lineUID string, pointChange float64) (float64, error) {
+// UpdateMemberPoints updates a member's central point balance and tier
+func (s *Store) UpdateMemberPoints(ctx context.Context, lineUID string, pointChange float64, getPoint float64) (float64, string, error) {
 	filter := bson.M{
 		"line_uid": lineUID,
 	}
+	incFields := bson.M{"point_balance": pointChange}
+	if getPoint > 0 {
+		incFields["total_earned"] = getPoint
+	}
 	update := bson.M{
-		"$inc": bson.M{"point_balance": pointChange},
+		"$inc": incFields,
 		"$set": bson.M{"updated_at": time.Now()},
 	}
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After).SetUpsert(true)
@@ -254,9 +347,17 @@ func (s *Store) UpdateMemberPoints(ctx context.Context, lineUID string, pointCha
 	var member Member
 	err := s.membersColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&member)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return member.PointBalance, nil
+
+	// Recalculate tier if needed
+	newTier := CalculateTier(member.TotalEarned)
+	if member.Tier != newTier {
+		s.membersColl.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"tier": newTier}})
+		member.Tier = newTier
+	}
+
+	return member.PointBalance, member.Tier, nil
 }
 
 // GetMemberByLineUID retrieves the central member record for a LINE user
@@ -325,14 +426,17 @@ func (s *Store) RecalculatePoints(ctx context.Context, lineUID, shopID string) (
 		}
 
 		balance := result.TotalGet - result.TotalUse
+		tier := CalculateTier(result.TotalGet)
 
-		// Update central member's point balance
+		// Update central member's point balance, total_earned, and tier
 		memberFilter := bson.M{
 			"line_uid": result.LineUID,
 		}
 		update := bson.M{
 			"$set": bson.M{
 				"point_balance": balance,
+				"total_earned":  result.TotalGet,
+				"tier":          tier,
 				"updated_at":    time.Now(),
 			},
 			"$setOnInsert": bson.M{
@@ -404,7 +508,7 @@ func (s *Store) VerifyLiffSession(ctx context.Context, sessionID, userID, displa
 
 // ========== Admin Functions ==========
 
-// Global store instance for admin handlers
+// Global store instance - singleton for all handlers
 var globalStore *Store
 
 func GetGlobalStore() *Store {
@@ -415,34 +519,51 @@ func SetGlobalStore(s *Store) {
 	globalStore = s
 }
 
+// getOrCreateStore returns the global store or creates a new one
+func getOrCreateStore() (*Store, error) {
+	if globalStore != nil {
+		return globalStore, nil
+	}
+	mongoURI := os.Getenv("MONGODB_URI")
+	if mongoURI == "" {
+		return nil, fmt.Errorf("MONGODB_URI not set")
+	}
+	s, err := NewStore(mongoURI)
+	if err != nil {
+		return nil, err
+	}
+	globalStore = s
+	return s, nil
+}
+
 // Admin data types
 type AdminData struct {
-	LineUID     string    `bson:"line_uid"`
-	DisplayName string    `bson:"display_name"`
-	PictureURL  string    `bson:"picture_url"`
-	Role        string    `bson:"role"`
-	Email       string    `bson:"email,omitempty"`
-	Phone       string    `bson:"phone,omitempty"`
-	CreatedAt   time.Time `bson:"created_at"`
-	UpdatedAt   time.Time `bson:"updated_at"`
+	LineUID     string    `bson:"line_uid" json:"line_uid"`
+	DisplayName string    `bson:"display_name" json:"display_name"`
+	PictureURL  string    `bson:"picture_url" json:"picture_url"`
+	Role        string    `bson:"role" json:"role"`
+	Email       string    `bson:"email,omitempty" json:"email,omitempty"`
+	Phone       string    `bson:"phone,omitempty" json:"phone,omitempty"`
+	CreatedAt   time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 type ShopData struct {
-	ID             string    `bson:"_id,omitempty"`
-	Name           string    `bson:"name"`
-	OwnerLineUID   string    `bson:"owner_line_uid"`
-	PointRate      int       `bson:"point_rate"`        // ซื้อกี่บาท = 1 แต้ม (default: 25)
-	MinAmount      int       `bson:"min_amount"`        // ยอดขั้นต่ำที่จะได้แต้ม (default: 0)
-	MaxPointsPerTx int       `bson:"max_points_per_tx"` // แต้มสูงสุดต่อบิล (0 = ไม่จำกัด)
-	RedeemRate     int       `bson:"redeem_rate"`       // 1 แต้ม = กี่บาท (default: 1)
-	Status         string    `bson:"status"`
-	APIKey         string    `bson:"api_key"`
-	Branches       int       `bson:"branches"`
-	Members        int       `bson:"members"`
-	PointsEarned   int       `bson:"points_earned"`
-	PointsUsed     int       `bson:"points_used"`
-	CreatedAt      time.Time `bson:"created_at"`
-	UpdatedAt      time.Time `bson:"updated_at"`
+	ID             string    `bson:"_id,omitempty" json:"_id,omitempty"`
+	Name           string    `bson:"name" json:"name"`
+	OwnerLineUID   string    `bson:"owner_line_uid" json:"owner_line_uid"`
+	PointRate      int       `bson:"point_rate" json:"point_rate"`
+	MinAmount      int       `bson:"min_amount" json:"min_amount"`
+	MaxPointsPerTx int       `bson:"max_points_per_tx" json:"max_points_per_tx"`
+	RedeemRate     int       `bson:"redeem_rate" json:"redeem_rate"`
+	Status         string    `bson:"status" json:"status"`
+	APIKey         string    `bson:"api_key" json:"api_key"`
+	Branches       int       `bson:"branches" json:"branches"`
+	Members        int       `bson:"members" json:"members"`
+	PointsEarned   int       `bson:"points_earned" json:"points_earned"`
+	PointsUsed     int       `bson:"points_used" json:"points_used"`
+	CreatedAt      time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt      time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 type DashboardStats struct {
@@ -452,6 +573,7 @@ type DashboardStats struct {
 	PointsUsedToday    int
 	ShopsStats         []ShopPointsStats
 	RecentTransactions []RecentTxData
+	TierStats          map[string]int `json:"tier_stats"`
 }
 
 type ShopPointsStats struct {
@@ -479,6 +601,7 @@ type MemberData struct {
 	ShopsVisited  []string `json:"shops_visited"`
 	CurrentPoints int      `json:"current_points"`
 	TotalEarned   int      `json:"total_earned"`
+	Tier          string   `json:"tier"`
 	JoinedAt      string   `json:"joined_at"`
 	LastActive    string   `json:"last_active"`
 }
@@ -486,6 +609,7 @@ type MemberData struct {
 type TransactionData struct {
 	ID            string
 	TransactionID string
+	MemberUID     string
 	MemberName    string
 	MemberPicture string
 	Shop          string
@@ -504,9 +628,9 @@ type TodayStatsData struct {
 
 // SaveAdmin saves or updates an admin user
 func SaveAdmin(lineUID, displayName, pictureURL, role string) error {
-	s := GetGlobalStore()
-	if s == nil {
-		return nil // No store configured
+	s, err := getOrCreateStore()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -529,36 +653,133 @@ func SaveAdmin(lineUID, displayName, pictureURL, role string) error {
 	}
 
 	opts := options.Update().SetUpsert(true)
-	_, err := adminsColl.UpdateOne(ctx, filter, update, opts)
+	_, err = adminsColl.UpdateOne(ctx, filter, update, opts)
+	return err
+}
+
+// CountAdmins returns the number of admins in the database
+func CountAdmins() (int64, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return 0, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminsColl := s.client.Database("bcmember").Collection("admins")
+	return adminsColl.CountDocuments(ctx, bson.M{})
+}
+
+// GetAdminRole checks if a LINE user is an admin and returns their role
+func GetAdminRole(lineUID string) (string, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return "", err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminsColl := s.client.Database("bcmember").Collection("admins")
+
+	var result struct {
+		Role string `bson:"role"`
+	}
+	err = adminsColl.FindOne(ctx, bson.M{"line_uid": lineUID}).Decode(&result)
+	if err != nil {
+		return "", err
+	}
+	return result.Role, nil
+}
+
+// GetAllAdmins returns all admin users
+func GetAllAdmins() ([]AdminData, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminsColl := s.client.Database("bcmember").Collection("admins")
+
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	cursor, err := adminsColl.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var admins []AdminData
+	if err := cursor.All(ctx, &admins); err != nil {
+		return nil, err
+	}
+	return admins, nil
+}
+
+// DeleteAdmin removes an admin by LINE UID
+func DeleteAdmin(lineUID string) error {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adminsColl := s.client.Database("bcmember").Collection("admins")
+	_, err = adminsColl.DeleteOne(ctx, bson.M{"line_uid": lineUID})
 	return err
 }
 
 // GetDashboardStats returns dashboard statistics
 func GetDashboardStats() (*DashboardStats, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
-
-	db := client.Database("bcmember")
+	db := s.client.Database("bcmember")
 	membersColl := db.Collection("members")
 	shopsColl := db.Collection("shops")
-	pointTransColl := db.Collection("point_transactions")
+	pointTransColl := s.pointTransColl
 
 	stats := &DashboardStats{}
 
 	// Count members
 	memberCount, _ := membersColl.CountDocuments(ctx, bson.M{})
 	stats.TotalMembers = int(memberCount)
+
+	// Tier stats
+	stats.TierStats = map[string]int{"Standard": 0, "Silver": 0, "Gold": 0, "Platinum": 0}
+	tierPipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id":   "$tier",
+			"count": bson.M{"$sum": 1},
+		}}},
+	}
+	tierCursor, tierErr := membersColl.Aggregate(ctx, tierPipeline)
+	if tierErr == nil {
+		defer tierCursor.Close(ctx)
+		for tierCursor.Next(ctx) {
+			var row struct {
+				Tier  string `bson:"_id"`
+				Count int    `bson:"count"`
+			}
+			if tierCursor.Decode(&row) == nil {
+				tier := row.Tier
+				if tier == "" {
+					tier = "Standard"
+				}
+				stats.TierStats[tier] = row.Count
+			}
+		}
+	}
 
 	// Count shops
 	shopCount, _ := shopsColl.CountDocuments(ctx, bson.M{})
@@ -661,21 +882,15 @@ func GetDashboardStats() (*DashboardStats, error) {
 
 // GetAllShops returns all shops
 func GetAllShops() ([]ShopData, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return []ShopData{}, nil
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, err
-	}
-	defer client.Disconnect(ctx)
-
-	shopsColl := client.Database("bcmember").Collection("shops")
+	shopsColl := s.client.Database("bcmember").Collection("shops")
 	cursor, err := shopsColl.Find(ctx, bson.M{})
 	if err != nil {
 		return nil, err
@@ -692,21 +907,13 @@ func GetAllShops() ([]ShopData, error) {
 
 // CreateShop creates a new shop (accepts ShopData pointer)
 func CreateShop(shop *ShopData) (string, error) {
-	// Get MongoDB URI from environment
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return "", fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return "", err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	// Connect to MongoDB
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
 
 	// Set defaults if not provided
 	if shop.ID == "" {
@@ -724,7 +931,7 @@ func CreateShop(shop *ShopData) (string, error) {
 	}
 	shop.UpdatedAt = time.Now()
 
-	shopsColl := client.Database("bcmember").Collection("shops")
+	shopsColl := s.client.Database("bcmember").Collection("shops")
 	_, err = shopsColl.InsertOne(ctx, shop)
 	if err != nil {
 		return "", err
@@ -735,21 +942,15 @@ func CreateShop(shop *ShopData) (string, error) {
 
 // UpdateShop updates shop settings
 func UpdateShop(shopID string, updates map[string]interface{}) error {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
-
-	shopsColl := client.Database("bcmember").Collection("shops")
+	shopsColl := s.client.Database("bcmember").Collection("shops")
 
 	updates["updated_at"] = time.Now()
 	update := bson.M{"$set": updates}
@@ -782,21 +983,15 @@ func CalculatePoints(shop *ShopData, amount float64) int {
 
 // GetShopByAPIKey returns shop data by API key
 func GetShopByAPIKey(apiKey string) (*ShopData, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
-
-	shopsColl := client.Database("bcmember").Collection("shops")
+	shopsColl := s.client.Database("bcmember").Collection("shops")
 
 	var shop ShopData
 	err = shopsColl.FindOne(ctx, bson.M{"api_key": apiKey}).Decode(&shop)
@@ -812,22 +1007,16 @@ func GetShopByAPIKey(apiKey string) (*ShopData, error) {
 
 // GetMemberShops returns all shops where a member has points
 func GetMemberShops(lineUID string) ([]MemberShopInfo, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
-
 	// Get unique shop names from point_transactions for this member
-	pointTransColl := client.Database("bcmember").Collection("point_transactions")
+	pointTransColl := s.pointTransColl
 
 	pipeline := []bson.M{
 		{"$match": bson.M{"line_uid": lineUID}},
@@ -890,23 +1079,16 @@ func generateRandomString(length int) string {
 
 // GetAllMembers returns all members for admin view with shops visited and total earned
 func GetAllMembers() ([]MemberData, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, fmt.Errorf("MONGODB_URI not set")
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	defer client.Disconnect(ctx)
-
-	db := client.Database("bcmember")
-	membersColl := db.Collection("members")
-	pointTransColl := db.Collection("point_transactions")
+	membersColl := s.membersColl
+	pointTransColl := s.pointTransColl
 
 	cursor, err := membersColl.Find(ctx, bson.M{})
 	if err != nil {
@@ -924,6 +1106,10 @@ func GetAllMembers() ([]MemberData, error) {
 	memberMap := make(map[string]*MemberData)
 
 	for i, m := range members {
+		tier := m.Tier
+		if tier == "" {
+			tier = CalculateTier(m.TotalEarned)
+		}
 		md := MemberData{
 			ID:            m.LineUID,
 			LineUID:       m.LineUID,
@@ -931,7 +1117,8 @@ func GetAllMembers() ([]MemberData, error) {
 			PictureURL:    m.PictureURL,
 			ShopsVisited:  []string{},
 			CurrentPoints: int(m.PointBalance),
-			TotalEarned:   0,
+			TotalEarned:   int(m.TotalEarned),
+			Tier:          tier,
 			JoinedAt:      m.CreatedAt.Format("2 Jan 2006"),
 			LastActive:    m.UpdatedAt.Format("2 Jan 2006"),
 		}
@@ -974,41 +1161,175 @@ func GetAllMembers() ([]MemberData, error) {
 	return result, nil
 }
 
-// GetAllTransactions returns all transactions for admin view
-func GetAllTransactions() ([]TransactionData, *TodayStatsData, error) {
-	mongoURI := os.Getenv("MONGODB_URI")
-	if mongoURI == "" {
-		return nil, nil, fmt.Errorf("MONGODB_URI not set")
+// AdjustMemberPoints adjusts a member's points by admin (add or deduct)
+// It creates a transaction record and updates the member's point balance
+func AdjustMemberPoints(lineUID, adjustType string, points int, note string) (float64, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return 0, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
+	pointTransColl := s.pointTransColl
+	membersColl := s.membersColl
+
+	// Create transaction record
+	var getPoint, usePoint float64
+	if adjustType == "add" {
+		getPoint = float64(points)
+	} else {
+		usePoint = float64(points)
 	}
-	defer client.Disconnect(ctx)
 
-	pointTransColl := client.Database("bcmember").Collection("point_transactions")
-
-	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(100)
-	cursor, err := pointTransColl.Find(ctx, bson.M{}, opts)
+	docNo := fmt.Sprintf("ADJ_%d", time.Now().UnixNano())
+	trans := PointTransaction{
+		LineUID:   lineUID,
+		ShopID:    "admin",
+		ShopName:  "ปรับแต้มโดย Admin",
+		DocNo:     docNo,
+		GetPoint:  getPoint,
+		UsePoint:  usePoint,
+		CreatedAt: time.Now(),
+	}
+	_, err = pointTransColl.InsertOne(ctx, trans)
 	if err != nil {
-		return nil, nil, err
+		return 0, fmt.Errorf("failed to save transaction: %v", err)
+	}
+
+	// Update member point balance and total_earned
+	pointChange := getPoint - usePoint
+	incFields := bson.M{"point_balance": pointChange}
+	if getPoint > 0 {
+		incFields["total_earned"] = getPoint
+	}
+	filter := bson.M{"line_uid": lineUID}
+	update := bson.M{
+		"$inc": incFields,
+		"$set": bson.M{"updated_at": time.Now()},
+	}
+	opts := options.FindOneAndUpdate().SetReturnDocument(options.After).SetUpsert(true)
+
+	var member Member
+	err = membersColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&member)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update member points: %v", err)
+	}
+
+	// Recalculate tier
+	newTier := CalculateTier(member.TotalEarned)
+	if member.Tier != newTier {
+		membersColl.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"tier": newTier}})
+	}
+
+	return member.PointBalance, nil
+}
+
+// TransactionFilter for server-side filtering and pagination
+type TransactionFilter struct {
+	StartDate string // "2025-01-15" format
+	EndDate   string // "2025-01-20" format
+	ShopID    string
+	TxType    string // "earn" | "redeem" | "" for all
+	Page      int
+	PageSize  int
+}
+
+// GetAllTransactions returns filtered transactions for admin view with server-side pagination
+func GetAllTransactions(filter TransactionFilter) ([]TransactionData, *TodayStatsData, int, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pointTransColl := s.pointTransColl
+
+	// Build dynamic filter
+	mongoFilter := bson.M{}
+	if filter.StartDate != "" {
+		if startTime, err := time.Parse("2006-01-02", filter.StartDate); err == nil {
+			if mongoFilter["created_at"] == nil {
+				mongoFilter["created_at"] = bson.M{}
+			}
+			mongoFilter["created_at"].(bson.M)["$gte"] = startTime
+		}
+	}
+	if filter.EndDate != "" {
+		if endTime, err := time.Parse("2006-01-02", filter.EndDate); err == nil {
+			endTime = endTime.Add(24*time.Hour - time.Second) // end of day
+			if mongoFilter["created_at"] == nil {
+				mongoFilter["created_at"] = bson.M{}
+			}
+			mongoFilter["created_at"].(bson.M)["$lte"] = endTime
+		}
+	}
+	if filter.ShopID != "" {
+		mongoFilter["shop_id"] = filter.ShopID
+	}
+	if filter.TxType == "earn" {
+		mongoFilter["get_point"] = bson.M{"$gt": 0}
+	} else if filter.TxType == "redeem" {
+		mongoFilter["use_point"] = bson.M{"$gt": 0}
+	}
+
+	// Defaults
+	if filter.PageSize <= 0 {
+		filter.PageSize = 50
+	}
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+
+	// Get total count
+	total, _ := pointTransColl.CountDocuments(ctx, mongoFilter)
+
+	// Query with pagination
+	skip := int64((filter.Page - 1) * filter.PageSize)
+	findOpts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetSkip(skip).
+		SetLimit(int64(filter.PageSize))
+
+	cursor, err := pointTransColl.Find(ctx, mongoFilter, findOpts)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	defer cursor.Close(ctx)
 
 	var transactions []PointTransaction
 	if err := cursor.All(ctx, &transactions); err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
+	}
+
+	// Build member lookup map for display names
+	memberMap := make(map[string]*Member)
+	lineUIDs := make([]string, 0)
+	for _, tx := range transactions {
+		if _, exists := memberMap[tx.LineUID]; !exists {
+			memberMap[tx.LineUID] = nil
+			lineUIDs = append(lineUIDs, tx.LineUID)
+		}
+	}
+	if len(lineUIDs) > 0 {
+		membersColl := s.membersColl
+		mCursor, mErr := membersColl.Find(ctx, bson.M{"line_uid": bson.M{"$in": lineUIDs}})
+		if mErr == nil {
+			defer mCursor.Close(ctx)
+			for mCursor.Next(ctx) {
+				var m Member
+				if mCursor.Decode(&m) == nil {
+					memberMap[m.LineUID] = &m
+				}
+			}
+		}
 	}
 
 	result := make([]TransactionData, 0, len(transactions))
-	todayStats := &TodayStatsData{}
-	today := time.Now().Truncate(24 * time.Hour)
-
-	for i, tx := range transactions {
+	for _, tx := range transactions {
 		txType := "earn"
 		points := int(tx.GetPoint)
 		if tx.UsePoint > 0 {
@@ -1016,31 +1337,179 @@ func GetAllTransactions() ([]TransactionData, *TodayStatsData, error) {
 			points = -int(tx.UsePoint)
 		}
 
+		memberName := "สมาชิก"
+		memberPicture := ""
+		if m, ok := memberMap[tx.LineUID]; ok && m != nil {
+			if m.DisplayName != "" {
+				memberName = m.DisplayName
+			}
+			memberPicture = m.PictureURL
+		} else if len(tx.LineUID) > 4 {
+			memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
+		}
+
 		result = append(result, TransactionData{
 			ID:            tx.DocNo,
 			TransactionID: tx.DocNo,
-			MemberName:    tx.LineUID[:8] + "...",
-			MemberPicture: "https://via.placeholder.com/32",
+			MemberUID:     tx.LineUID,
+			MemberName:    memberName,
+			MemberPicture: memberPicture,
 			Shop:          tx.ShopName,
 			Type:          txType,
 			Points:        points,
-			Amount:        int(tx.GetPoint) * 25, // Estimate
+			Amount:        0,
 			Date:          tx.CreatedAt.Format(time.RFC3339),
 		})
-
-		// Today stats
-		if tx.CreatedAt.After(today) {
-			todayStats.Count++
-			todayStats.Earned += int(tx.GetPoint)
-			todayStats.Used += int(tx.UsePoint)
-		}
-
-		_ = i
 	}
 
+	// Today stats (always computed separately, not affected by filter)
+	todayStats := &TodayStatsData{}
+	today := time.Now().Truncate(24 * time.Hour)
+	todayFilter := bson.M{"created_at": bson.M{"$gte": today}}
+	todayCursor, todayErr := pointTransColl.Find(ctx, todayFilter)
+	if todayErr == nil {
+		defer todayCursor.Close(ctx)
+		for todayCursor.Next(ctx) {
+			var tx PointTransaction
+			if todayCursor.Decode(&tx) == nil {
+				todayStats.Count++
+				todayStats.Earned += int(tx.GetPoint)
+				todayStats.Used += int(tx.UsePoint)
+			}
+		}
+	}
 	todayStats.Net = todayStats.Earned - todayStats.Used
 
-	return result, todayStats, nil
+	return result, todayStats, int(total), nil
+}
+
+// ========== Chart Data ==========
+
+// DailyPointsData represents daily points aggregation
+type DailyPointsData struct {
+	Date         string `json:"date"`
+	PointsEarned int    `json:"points_earned"`
+	PointsUsed   int    `json:"points_used"`
+}
+
+// DailyMembersData represents daily new member count
+type DailyMembersData struct {
+	Date     string `json:"date"`
+	NewCount int    `json:"new_count"`
+}
+
+// ChartData holds chart data for dashboard
+type ChartData struct {
+	DailyPoints  []DailyPointsData  `json:"daily_points"`
+	DailyMembers []DailyMembersData `json:"daily_members"`
+}
+
+// GetDashboardChartData returns aggregated daily data for charts
+func GetDashboardChartData(days int) (*ChartData, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	startDate := time.Now().Truncate(24 * time.Hour).AddDate(0, 0, -(days - 1))
+
+	// Points aggregation by date
+	pointsPipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"created_at": bson.M{"$gte": startDate},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"$dateToString": bson.M{
+					"format": "%Y-%m-%d",
+					"date":   "$created_at",
+				},
+			},
+			"points_earned": bson.M{"$sum": "$get_point"},
+			"points_used":   bson.M{"$sum": "$use_point"},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
+	}
+
+	pointsMap := make(map[string]DailyPointsData)
+	aggCursor, err := s.pointTransColl.Aggregate(ctx, pointsPipeline)
+	if err == nil {
+		defer aggCursor.Close(ctx)
+		for aggCursor.Next(ctx) {
+			var row struct {
+				Date         string  `bson:"_id"`
+				PointsEarned float64 `bson:"points_earned"`
+				PointsUsed   float64 `bson:"points_used"`
+			}
+			if aggCursor.Decode(&row) == nil {
+				pointsMap[row.Date] = DailyPointsData{
+					Date:         row.Date,
+					PointsEarned: int(row.PointsEarned),
+					PointsUsed:   int(row.PointsUsed),
+				}
+			}
+		}
+	}
+
+	// Members aggregation by created_at date
+	membersColl := s.membersColl
+	membersPipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"created_at": bson.M{"$gte": startDate},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{
+				"$dateToString": bson.M{
+					"format": "%Y-%m-%d",
+					"date":   "$created_at",
+				},
+			},
+			"new_count": bson.M{"$sum": 1},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "_id", Value: 1}}}},
+	}
+
+	membersMap := make(map[string]DailyMembersData)
+	memCursor, err := membersColl.Aggregate(ctx, membersPipeline)
+	if err == nil {
+		defer memCursor.Close(ctx)
+		for memCursor.Next(ctx) {
+			var row struct {
+				Date     string `bson:"_id"`
+				NewCount int    `bson:"new_count"`
+			}
+			if memCursor.Decode(&row) == nil {
+				membersMap[row.Date] = DailyMembersData{
+					Date:     row.Date,
+					NewCount: row.NewCount,
+				}
+			}
+		}
+	}
+
+	// Fill in all dates with zero defaults
+	chartData := &ChartData{
+		DailyPoints:  make([]DailyPointsData, 0, days),
+		DailyMembers: make([]DailyMembersData, 0, days),
+	}
+	for d := 0; d < days; d++ {
+		dateStr := startDate.AddDate(0, 0, d).Format("2006-01-02")
+		if pd, ok := pointsMap[dateStr]; ok {
+			chartData.DailyPoints = append(chartData.DailyPoints, pd)
+		} else {
+			chartData.DailyPoints = append(chartData.DailyPoints, DailyPointsData{Date: dateStr})
+		}
+		if md, ok := membersMap[dateStr]; ok {
+			chartData.DailyMembers = append(chartData.DailyMembers, md)
+		} else {
+			chartData.DailyMembers = append(chartData.DailyMembers, DailyMembersData{Date: dateStr})
+		}
+	}
+
+	return chartData, nil
 }
 
 // ========== Login Session Functions (for QR Code login) ==========
@@ -1130,4 +1599,102 @@ func (s *Store) VerifyLoginSession(ctx context.Context, sessionID string, user *
 		return mongo.ErrNoDocuments
 	}
 	return nil
+}
+
+// ========== Audit Logs ==========
+
+// SaveAuditLog records an admin action to the audit_logs collection
+func SaveAuditLog(adminLineUID, adminName, action, targetType, targetID, details string) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		fmt.Printf("ERROR: SaveAuditLog store: %v\n", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	coll := s.client.Database("bcmember").Collection("audit_logs")
+	_, err = coll.InsertOne(ctx, AuditLog{
+		AdminLineUID: adminLineUID,
+		AdminName:    adminName,
+		Action:       action,
+		TargetType:   targetType,
+		TargetID:     targetID,
+		Details:      details,
+		CreatedAt:    time.Now(),
+	})
+	if err != nil {
+		fmt.Printf("ERROR: SaveAuditLog insert: %v\n", err)
+	}
+}
+
+// GetAuditLogs retrieves audit logs with filtering and pagination
+func GetAuditLogs(filter AuditLogFilter) ([]AuditLog, int, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	coll := s.client.Database("bcmember").Collection("audit_logs")
+
+	// Build dynamic filter
+	query := bson.M{}
+	if filter.Action != "" {
+		query["action"] = filter.Action
+	}
+	if filter.StartDate != "" {
+		if t, err := time.Parse("2006-01-02", filter.StartDate); err == nil {
+			if query["created_at"] == nil {
+				query["created_at"] = bson.M{}
+			}
+			query["created_at"].(bson.M)["$gte"] = t
+		}
+	}
+	if filter.EndDate != "" {
+		if t, err := time.Parse("2006-01-02", filter.EndDate); err == nil {
+			endOfDay := t.Add(24*time.Hour - time.Millisecond)
+			if query["created_at"] == nil {
+				query["created_at"] = bson.M{}
+			}
+			query["created_at"].(bson.M)["$lte"] = endOfDay
+		}
+	}
+
+	// Count total
+	total, err := coll.CountDocuments(ctx, query)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Pagination defaults
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	if filter.PageSize < 1 {
+		filter.PageSize = 20
+	}
+	skip := (filter.Page - 1) * filter.PageSize
+
+	// Query with sort and pagination
+	opts := options.Find().
+		SetSort(bson.D{{Key: "created_at", Value: -1}}).
+		SetSkip(int64(skip)).
+		SetLimit(int64(filter.PageSize))
+
+	cursor, err := coll.Find(ctx, query, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cursor.Close(ctx)
+
+	var logs []AuditLog
+	if err := cursor.All(ctx, &logs); err != nil {
+		return nil, 0, err
+	}
+
+	return logs, int(total), nil
 }

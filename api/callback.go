@@ -136,6 +136,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 					} else {
 						replyText(bot, event.ReplyToken, "✅ ยืนยันตัวตนสำเร็จแล้ว! \n\nกรุณากลับไปที่แอพเพื่อดำเนินการต่อ")
 					}
+				} else if strings.EqualFold(text, "uid") || text == "ไอดี" {
+					// Reply with user's LINE UID
+					replyText(bot, event.ReplyToken, fmt.Sprintf("🔑 LINE UID ของคุณคือ:\n\n%s\n\nคัดลอกไปใช้ในระบบ Admin ได้เลย", userID))
 				} else if text == "แต้มสะสม" || text == "แต้ม" || text == "พ้อยท์" || text == "point" || text == "points" {
 					// Check points command
 					response := getPointSummary(ctx, userID, st)
