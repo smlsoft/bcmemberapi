@@ -3,9 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"bcmemberapi/store"
@@ -30,7 +32,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.Header().Set("Content-Type", "application/json")
 
 	// Handle OPTIONS request
@@ -45,25 +47,24 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify API Key
-	apiKey := r.Header.Get("X-API-Key")
-	if apiKey != "bcaicloudx" {
-		sendError(w, http.StatusUnauthorized, "Invalid API Key")
+	// Verify admin authentication via Bearer token
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		sendError(w, http.StatusUnauthorized, "Authorization required")
 		return
 	}
 
-	// Parse request body
-	var req RecalPointsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// If body is empty, use default values (recalculate all)
-		req = RecalPointsRequest{}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	// Token format: lineUID_timestamp (from admin login)
+	parts := strings.SplitN(token, "_", 2)
+	if len(parts) < 2 || parts[0] == "" {
+		sendError(w, http.StatusUnauthorized, "Invalid token")
+		return
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	adminLineUID := parts[0]
 
-	// Connect to MongoDB
+	// Initialize global store for admin check
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
 		log.Println("ERROR: MONGODB_URI not configured")
@@ -77,6 +78,38 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, "Database connection failed")
 		return
 	}
+	store.SetGlobalStore(st)
+
+	// Verify admin role
+	role, err := store.GetAdminRole(adminLineUID)
+	if err != nil || role == "" {
+		// Also check env ADMIN_LINE_UIDS
+		envAdmins := os.Getenv("ADMIN_LINE_UIDS")
+		isAdmin := false
+		if envAdmins != "" {
+			for _, uid := range strings.Split(envAdmins, ",") {
+				if strings.TrimSpace(uid) == adminLineUID {
+					isAdmin = true
+					break
+				}
+			}
+		}
+		if !isAdmin {
+			sendError(w, http.StatusForbidden, "Admin access required")
+			return
+		}
+	}
+
+	// Parse request body
+	var req RecalPointsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// If body is empty, use default values (recalculate all)
+		req = RecalPointsRequest{}
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// Recalculate points
 	count, err := st.RecalculatePoints(ctx, req.LineUID, req.ShopID)
@@ -85,6 +118,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusInternalServerError, "Failed to recalculate points")
 		return
 	}
+
+	// Audit log
+	go store.SaveAuditLog(adminLineUID, "", "recalculate_points", "system", "", fmt.Sprintf("count: %d", count))
 
 	// Send success response
 	w.WriteHeader(http.StatusOK)

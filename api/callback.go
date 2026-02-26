@@ -97,23 +97,38 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	for _, event := range events {
-		if event.Type == linebot.EventTypeMessage {
+		switch event.Type {
+		case linebot.EventTypeFollow:
+			// User added bot as friend — save profile immediately
+			userID := event.Source.UserID
+			if profile, err := bot.GetProfile(userID).Do(); err == nil {
+				if err := st.UpsertMember(ctx, userID, profile.DisplayName, profile.PictureURL); err != nil {
+					log.Printf("ERROR: UpsertMember on follow failed: %v", err)
+				}
+				log.Printf("New follower: %s (%s)", profile.DisplayName, userID)
+			}
+
+		case linebot.EventTypeMessage:
 			switch message := event.Message.(type) {
 			case *linebot.TextMessage:
 				text := strings.TrimSpace(message.Text)
 				userID := event.Source.UserID
 
+				// Get profile and update member on every interaction
+				profile, profileErr := bot.GetProfile(userID).Do()
+				displayName := ""
+				pictureURL := ""
+				if profileErr == nil {
+					displayName = profile.DisplayName
+					pictureURL = profile.PictureURL
+				}
+				if err := st.UpsertMember(ctx, userID, displayName, pictureURL); err != nil {
+					log.Printf("ERROR: UpsertMember failed: %v", err)
+				}
+
 				// Check if it's a 4-digit code
 				if matched, _ := regexp.MatchString(`^\d{4}$`, text); matched {
 					// It's a login code
-					profile, err := bot.GetProfile(userID).Do()
-					displayName := ""
-					pictureURL := ""
-					if err == nil {
-						displayName = profile.DisplayName
-						pictureURL = profile.PictureURL
-					}
-
 					err = st.VerifyCode(ctx, text, userID, displayName, pictureURL)
 					if err != nil {
 						log.Printf("ERROR: VerifyCode failed: %v", err)
@@ -121,6 +136,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 					} else {
 						replyText(bot, event.ReplyToken, "✅ ยืนยันตัวตนสำเร็จแล้ว! \n\nกรุณากลับไปที่แอพเพื่อดำเนินการต่อ")
 					}
+				} else if strings.EqualFold(text, "uid") || text == "ไอดี" {
+					// Reply with user's LINE UID
+					replyText(bot, event.ReplyToken, fmt.Sprintf("🔑 LINE UID ของคุณคือ:\n\n%s\n\nคัดลอกไปใช้ในระบบ Admin ได้เลย", userID))
 				} else if text == "แต้มสะสม" || text == "แต้ม" || text == "พ้อยท์" || text == "point" || text == "points" {
 					// Check points command
 					response := getPointSummary(ctx, userID, st)
@@ -175,35 +193,24 @@ func replyText(bot *linebot.Client, token, text string) {
 	}
 }
 
-// getPointSummary retrieves point summary from members collection
+// getPointSummary retrieves central point summary from members collection
 func getPointSummary(ctx context.Context, lineUID string, st *store.Store) string {
-	// Get members by LINE UID
-	members, err := st.GetMembersByLineUID(ctx, lineUID)
+	// Get central member record
+	member, err := st.GetMemberByLineUID(ctx, lineUID)
 	if err != nil {
-		log.Printf("ERROR: GetMembersByLineUID failed: %v", err)
+		log.Printf("ERROR: GetMemberByLineUID failed: %v", err)
 		return "❌ เกิดข้อผิดพลาดในการดึงข้อมูลแต้มสะสม"
 	}
 
 	// No points found
-	if len(members) == 0 {
+	if member == nil {
 		return "📋 คุณยังไม่มีแต้มสะสม"
 	}
 
 	// Build response message
 	var sb strings.Builder
 	sb.WriteString("✨ แต้มสะสมของคุณ\n\n")
-
-	var totalPoints float64
-	for _, m := range members {
-		shopName := m.ShopName
-		if shopName == "" {
-			shopName = m.ShopID
-		}
-		sb.WriteString(fmt.Sprintf("🏪 %s: %.0f แต้ม\n", shopName, m.PointBalance))
-		totalPoints += m.PointBalance
-	}
-
-	sb.WriteString(fmt.Sprintf("\n📊 รวมทั้งหมด: %.0f แต้ม", totalPoints))
+	sb.WriteString(fmt.Sprintf("💰 แต้มรวม: %.0f แต้ม", member.PointBalance))
 
 	return sb.String()
 }

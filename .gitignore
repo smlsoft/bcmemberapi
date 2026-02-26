@@ -45,3 +45,4 @@ ngrok.log
 tmp/
 temp/
 .vercel
+.env*.local

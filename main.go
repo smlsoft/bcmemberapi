@@ -23,7 +23,7 @@ func main() {
 	st, bot, aiService := initDependencies(cfg)
 
 	// Create server and register routes
-	srv := server.New(st, bot, aiService)
+	srv := server.New(st, bot, aiService, cfg)
 	srv.RegisterRoutes()
 
 	// Start HTTP server
