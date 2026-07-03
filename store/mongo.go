@@ -95,6 +95,7 @@ type Store struct {
 	chatHistColl   *mongo.Collection
 	pointTransColl *mongo.Collection
 	membersColl    *mongo.Collection
+	tableOrderColl *mongo.Collection
 }
 
 // formatTimeAgo returns a human-readable time difference in Thai
@@ -129,6 +130,7 @@ func NewStore(uri string) (*Store, error) {
 	chatHistColl := db.Collection("chat_history")
 	pointTransColl := db.Collection("point_transactions")
 	membersColl := db.Collection("members")
+	tableOrderCollInst := db.Collection("table_order_sessions")
 
 	s := &Store{
 		client:         client,
@@ -136,10 +138,12 @@ func NewStore(uri string) (*Store, error) {
 		chatHistColl:   chatHistColl,
 		pointTransColl: pointTransColl,
 		membersColl:    membersColl,
+		tableOrderColl: tableOrderCollInst,
 	}
 
 	// Ensure indexes (runs once, idempotent)
 	s.ensureIndexes(ctx)
+	EnsureTableOrderIndexes(ctx, client)
 
 	return s, nil
 }

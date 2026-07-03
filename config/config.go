@@ -16,6 +16,8 @@ type Config struct {
 	GeminiAPIKey      string
 	LiffID            string
 	LiffURL           string
+	TableLiffID       string
+	TableLiffURL      string
 }
 
 // Load loads configuration from environment variables
@@ -24,6 +26,7 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	liffID := getEnvOrDefault("LIFF_ID", "2008745223-8Ol0oVZk")
+	tableLiffID := os.Getenv("TABLE_LIFF_ID")
 	cfg := &Config{
 		Port:              getEnvOrDefault("PORT", "8080"),
 		MongoURI:          os.Getenv("MONGODB_URI"),
@@ -32,6 +35,8 @@ func Load() (*Config, error) {
 		GeminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
 		LiffID:            liffID,
 		LiffURL:           "https://liff.line.me/" + liffID,
+		TableLiffID:       tableLiffID,
+		TableLiffURL:      "https://liff.line.me/" + tableLiffID,
 	}
 
 	if err := cfg.Validate(); err != nil {

@@ -7,6 +7,7 @@ import (
 
 	adminHandler "bcmemberapi/api/admin"
 	loginQRHandler "bcmemberapi/api/login-qr"
+	tableOrderHandler "bcmemberapi/api/table-order"
 )
 
 // RegisterRoutes registers all HTTP routes
@@ -51,5 +52,10 @@ func (s *Server) RegisterRoutes() {
 		q.Set("action", "kiosk")
 		r.URL.RawQuery = q.Encode()
 		loginQRHandler.Handler(w, r)
+	})
+
+	// Table order routes
+	http.HandleFunc("/api/table-order/", func(w http.ResponseWriter, r *http.Request) {
+		tableOrderHandler.Handler(w, r)
 	})
 }
