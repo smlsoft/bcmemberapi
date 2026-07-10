@@ -18,34 +18,27 @@ import (
 
 // Handler for POST /api/callback (LINE Webhook)
 func Handler(w http.ResponseWriter, r *http.Request) {
-	// CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Line-Signature")
 
-	// Handle OPTIONS request
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-
-	// Only allow POST
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Get LINE credentials from environment
 	channelSecret := strings.TrimSpace(os.Getenv("LINE_CHANNEL_SECRET"))
 	channelToken := strings.TrimSpace(os.Getenv("LINE_CHANNEL_TOKEN"))
-
 	if channelSecret == "" || channelToken == "" {
 		log.Println("ERROR: LINE credentials not configured")
 		http.Error(w, "LINE credentials not configured", http.StatusInternalServerError)
 		return
 	}
 
-	// Create LINE bot client
 	bot, err := linebot.New(channelSecret, channelToken)
 	if err != nil {
 		log.Printf("ERROR: Failed to create LINE bot: %v", err)
@@ -53,7 +46,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse LINE request
 	events, err := bot.ParseRequest(r)
 	if err != nil {
 		log.Printf("ERROR: ParseRequest failed: %v", err)
@@ -65,7 +57,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get MongoDB URI
 	mongoURI := strings.TrimSpace(os.Getenv("MONGODB_URI"))
 	if mongoURI == "" {
 		log.Println("ERROR: MongoDB URI not configured")
@@ -73,7 +64,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create MongoDB store
 	st, err := store.NewStore(mongoURI)
 	if err != nil {
 		log.Printf("ERROR: Database connection failed: %v", err)
@@ -81,25 +71,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get Gemini API key
-	geminiAPIKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
-	if geminiAPIKey == "" {
-		log.Println("ERROR: Gemini API key not configured")
-		http.Error(w, "Gemini API key not configured", http.StatusInternalServerError)
-		return
-	}
-
-	// Create AI service
-	aiService := ai.NewGeminiService(geminiAPIKey)
-
-	// Process each event
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	for _, event := range events {
 		switch event.Type {
 		case linebot.EventTypeFollow:
-			// User added bot as friend — save profile immediately
 			userID := event.Source.UserID
 			if profile, err := bot.GetProfile(userID).Do(); err == nil {
 				if err := st.UpsertMember(ctx, userID, profile.DisplayName, profile.PictureURL); err != nil {
@@ -114,11 +91,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 				text := strings.TrimSpace(message.Text)
 				userID := event.Source.UserID
 
-				// Get profile and update member on every interaction
-				profile, profileErr := bot.GetProfile(userID).Do()
-				displayName := ""
-				pictureURL := ""
-				if profileErr == nil {
+				displayName, pictureURL := "", ""
+				if profile, profileErr := bot.GetProfile(userID).Do(); profileErr == nil {
 					displayName = profile.DisplayName
 					pictureURL = profile.PictureURL
 				}
@@ -126,58 +100,21 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 					log.Printf("ERROR: UpsertMember failed: %v", err)
 				}
 
-				// Check if it's a 4-digit code
 				if matched, _ := regexp.MatchString(`^\d{4}$`, text); matched {
-					// It's a login code
 					err = st.VerifyCode(ctx, text, userID, displayName, pictureURL)
 					if err != nil {
 						log.Printf("ERROR: VerifyCode failed: %v", err)
 						replyText(bot, event.ReplyToken, "รหัสไม่ถูกต้องหรือหมดอายุแล้ว")
 					} else {
-						replyText(bot, event.ReplyToken, "✅ ยืนยันตัวตนสำเร็จแล้ว! \n\nกรุณากลับไปที่แอพเพื่อดำเนินการต่อ")
+						replyText(bot, event.ReplyToken, "ยืนยันตัวตนสำเร็จแล้ว\n\nกรุณากลับไปที่แอปเพื่อดำเนินการต่อ")
 					}
-				} else if strings.EqualFold(text, "uid") || text == "ไอดี" {
-					// Reply with user's LINE UID
-					replyText(bot, event.ReplyToken, fmt.Sprintf("🔑 LINE UID ของคุณคือ:\n\n%s\n\nคัดลอกไปใช้ในระบบ Admin ได้เลย", userID))
-				} else if text == "แต้มสะสม" || text == "แต้ม" || text == "พ้อยท์" || text == "point" || text == "points" {
-					// Check points command
+				} else if isUIDCommand(text) {
+					replyText(bot, event.ReplyToken, fmt.Sprintf("LINE UID ของคุณคือ:\n\n%s\n\nคัดลอกไปใช้ในระบบ Admin ได้เลย", userID))
+				} else if isPointCommand(text) {
 					response := getPointSummary(ctx, userID, st)
 					replyText(bot, event.ReplyToken, response)
 				} else {
-					// AI Chatbot logic
-					// Get chat history (last 6 messages = 3 conversation pairs to save AI tokens)
-					history, err := st.GetChatHistory(ctx, userID, 6)
-					if err != nil {
-						log.Printf("ERROR: GetChatHistory failed: %v", err)
-					}
-
-					// Convert to AI message format
-					aiHistory := make([]ai.ChatMessage, len(history))
-					for i, msg := range history {
-						aiHistory[i] = ai.ChatMessage{
-							Role:    msg.Role,
-							Message: msg.Message,
-						}
-					}
-
-					// Generate AI response
-					aiResponse, err := aiService.GenerateResponseWithHistory(text, aiHistory)
-					if err != nil {
-						log.Printf("ERROR: GenerateResponseWithHistory failed: %v", err)
-						aiResponse = "ขอโทษครับ เกิดข้อผิดพลาดในการประมวลผล กรุณาลองใหม่อีกครั้ง"
-					}
-
-					// Save user message
-					if err := st.SaveChatMessage(ctx, userID, "user", text); err != nil {
-						log.Printf("ERROR: SaveChatMessage (user) failed: %v", err)
-					}
-
-					// Save AI response
-					if err := st.SaveChatMessage(ctx, userID, "assistant", aiResponse); err != nil {
-						log.Printf("ERROR: SaveChatMessage (assistant) failed: %v", err)
-					}
-
-					// Reply to user
+					aiResponse := generateAIReply(ctx, text, userID, st)
 					replyText(bot, event.ReplyToken, aiResponse)
 				}
 			}
@@ -185,6 +122,57 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func isUIDCommand(text string) bool {
+	text = strings.TrimSpace(strings.ToLower(text))
+	return text == "uid" || text == "ไอดี" || text == "id" || text == "line uid"
+}
+
+func isPointCommand(text string) bool {
+	text = strings.TrimSpace(strings.ToLower(text))
+	switch text {
+	case "แต้ม", "แต้มสะสม", "แต้มคงเหลือ", "เช็คแต้ม", "ดูแต้ม", "คะแนน", "พ้อยท์", "พอยท์", "point", "points", "balance":
+		return true
+	default:
+		return false
+	}
+}
+
+func generateAIReply(ctx context.Context, text, userID string, st *store.Store) string {
+	geminiAPIKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
+	if geminiAPIKey == "" {
+		return fallbackHelpMessage()
+	}
+
+	history, err := st.GetChatHistory(ctx, userID, 6)
+	if err != nil {
+		log.Printf("ERROR: GetChatHistory failed: %v", err)
+	}
+
+	aiHistory := make([]ai.ChatMessage, len(history))
+	for i, msg := range history {
+		aiHistory[i] = ai.ChatMessage{Role: msg.Role, Message: msg.Message}
+	}
+
+	aiService := ai.NewGeminiService(geminiAPIKey)
+	aiResponse, err := aiService.GenerateResponseWithHistory(text, aiHistory)
+	if err != nil {
+		log.Printf("ERROR: GenerateResponseWithHistory failed: %v", err)
+		return fallbackHelpMessage()
+	}
+
+	if err := st.SaveChatMessage(ctx, userID, "user", text); err != nil {
+		log.Printf("ERROR: SaveChatMessage (user) failed: %v", err)
+	}
+	if err := st.SaveChatMessage(ctx, userID, "assistant", aiResponse); err != nil {
+		log.Printf("ERROR: SaveChatMessage (assistant) failed: %v", err)
+	}
+	return aiResponse
+}
+
+func fallbackHelpMessage() string {
+	return "พิมพ์ \"แต้มคงเหลือ\" เพื่อดูแต้มสะสม หรือพิมพ์ \"uid\" เพื่อดู LINE UID ของคุณ"
 }
 
 func replyText(bot *linebot.Client, token, text string) {
@@ -195,22 +183,19 @@ func replyText(bot *linebot.Client, token, text string) {
 
 // getPointSummary retrieves central point summary from members collection
 func getPointSummary(ctx context.Context, lineUID string, st *store.Store) string {
-	// Get central member record
 	member, err := st.GetMemberByLineUID(ctx, lineUID)
 	if err != nil {
 		log.Printf("ERROR: GetMemberByLineUID failed: %v", err)
-		return "❌ เกิดข้อผิดพลาดในการดึงข้อมูลแต้มสะสม"
+		return "เกิดข้อผิดพลาดในการดึงข้อมูลแต้มสะสม กรุณาลองใหม่อีกครั้ง"
 	}
-
-	// No points found
 	if member == nil {
-		return "📋 คุณยังไม่มีแต้มสะสม"
+		return "คุณยังไม่มีแต้มสะสม"
 	}
 
-	// Build response message
 	var sb strings.Builder
-	sb.WriteString("✨ แต้มสะสมของคุณ\n\n")
-	sb.WriteString(fmt.Sprintf("💰 แต้มรวม: %.0f แต้ม", member.PointBalance))
-
+	sb.WriteString("แต้มสะสมของคุณ\n\n")
+	sb.WriteString(fmt.Sprintf("แต้มคงเหลือ: %.0f แต้ม\n", member.PointBalance))
+	sb.WriteString(fmt.Sprintf("แต้มสะสมทั้งหมด: %.0f แต้ม\n", member.TotalEarned))
+	sb.WriteString(fmt.Sprintf("ระดับสมาชิก: %s", member.Tier))
 	return sb.String()
 }

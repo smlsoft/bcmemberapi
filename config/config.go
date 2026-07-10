@@ -58,9 +58,6 @@ func (c *Config) Validate() error {
 	if c.LineChannelToken == "" {
 		return errors.New("LINE_CHANNEL_TOKEN is required")
 	}
-	if c.GeminiAPIKey == "" {
-		return errors.New("GEMINI_API_KEY is required")
-	}
 	return nil
 }
 
