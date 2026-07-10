@@ -132,13 +132,13 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   "คุณไม่มีสิทธิ์เข้าใช้งาน Admin Panel",
+				"error":   "à¸„à¸¸à¸“à¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸´à¸—à¸˜à¸´à¹Œà¹€à¸‚à¹‰à¸²à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ Admin Panel",
 			})
 			return
 		}
 		role = "admin"
 	} else {
-		// No ADMIN_LINE_UIDS set — check from admins collection in database
+		// No ADMIN_LINE_UIDS set â€” check from admins collection in database
 		existingRole, err := store.GetAdminRole(req.LineUID)
 		if err != nil || existingRole == "" {
 			// Auto-bootstrap: if no admins exist yet, first login becomes super_admin
@@ -148,7 +148,7 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			} else {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"success": false,
-					"error":   "คุณไม่มีสิทธิ์เข้าใช้งาน Admin Panel",
+					"error":   "à¸„à¸¸à¸“à¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸´à¸—à¸˜à¸´à¹Œà¹€à¸‚à¹‰à¸²à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ Admin Panel",
 				})
 				return
 			}
@@ -204,16 +204,22 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 	chartData, _ := store.GetDashboardChartData(days)
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":            true,
-		"totalMembers":       stats.TotalMembers,
-		"totalShops":         stats.TotalShops,
-		"pointsEarnedToday":  stats.PointsEarnedToday,
-		"pointsUsedToday":    stats.PointsUsedToday,
-		"shopsStats":         stats.ShopsStats,
-		"recentTransactions": stats.RecentTransactions,
-		"tierStats":          stats.TierStats,
-		"chartData":          chartData,
-		"chartDays":          days,
+		"success":                true,
+		"totalMembers":           stats.TotalMembers,
+		"totalShops":             stats.TotalShops,
+		"pointsEarnedToday":      stats.PointsEarnedToday,
+		"pointsUsedToday":        stats.PointsUsedToday,
+		"shopsStats":             stats.ShopsStats,
+		"recentTransactions":     stats.RecentTransactions,
+		"tierStats":              stats.TierStats,
+		"chartData":              chartData,
+		"chartDays":              days,
+		"outstandingPoints":      stats.OutstandingPoints,
+		"topMembers":             stats.TopMembers,
+		"abnormalAdjustments":    stats.AbnormalAdjustments,
+		"duplicateInvoicesToday": stats.DuplicateInvoicesToday,
+		"rejectedInvoicesToday":  stats.RejectedInvoicesToday,
+		"recentInvoiceIssues":    stats.RecentInvoiceIssues,
 	})
 }
 
@@ -222,7 +228,43 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
 func handleShops(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		// Get all shops
+		if shopID := strings.TrimSpace(r.URL.Query().Get("id")); shopID != "" {
+			shop, err := store.GetShopByID(shopID)
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to get shop: " + err.Error()})
+				return
+			}
+			if shop == nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Shop not found"})
+				return
+			}
+			amount := 0.0
+			redeemPoint := 0.0
+			if v, err := strconv.ParseFloat(r.URL.Query().Get("amount"), 64); err == nil {
+				amount = v
+			}
+			if v, err := strconv.ParseFloat(r.URL.Query().Get("redeem_point"), 64); err == nil {
+				redeemPoint = v
+			}
+			preview, _ := store.PreviewShopPoints(shopID, amount, redeemPoint)
+			detail, err := store.GetShopDetail(shopID, 20)
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to get shop detail: " + err.Error()})
+				return
+			}
+			response := map[string]interface{}{"success": true, "shop": shop, "preview": preview, "active": store.IsShopActive(shop)}
+			if detail != nil {
+				response["detail"] = detail
+				response["stats"] = detail.Stats
+				response["members"] = detail.Members
+				response["top_members"] = detail.TopMembers
+				response["recent_transactions"] = detail.RecentTransactions
+				response["invoice_issues"] = detail.InvoiceIssues
+			}
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
 		shops, err := store.GetAllShops()
 		if err != nil {
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -310,6 +352,7 @@ func handleShops(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		// Update shop settings
 		var req struct {
+			Action         string `json:"action"`
 			ID             string `json:"id"`
 			Name           string `json:"name"`
 			PointRate      int    `json:"point_rate"`
@@ -335,6 +378,27 @@ func handleShops(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		switch req.Action {
+		case "rotate_api_key":
+			newKey, err := store.RotateShopAPIKey(req.ID)
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to rotate API key: " + err.Error()})
+				return
+			}
+			adminUID := extractAdminFromToken(r)
+			go store.SaveAuditLog(adminUID, "", "rotate_api_key", "shop", req.ID, "rotated API key")
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "api_key": newKey})
+			return
+		case "revoke_api_key":
+			if err := store.RevokeShopAPIKey(req.ID); err != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to revoke API key: " + err.Error()})
+				return
+			}
+			adminUID := extractAdminFromToken(r)
+			go store.SaveAuditLog(adminUID, "", "revoke_api_key", "shop", req.ID, "revoked API key and set inactive")
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+			return
+		}
 		// Build updates map
 		updates := map[string]interface{}{}
 		if req.Name != "" {
@@ -387,19 +451,59 @@ func handleShops(w http.ResponseWriter, r *http.Request) {
 func handleMembers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		members, err := store.GetAllMembers()
-		if err != nil {
+		if lineUID := strings.TrimSpace(r.URL.Query().Get("line_uid")); lineUID != "" {
+			txPage := 1
+			txPageSize := 20
+			if p, err := strconv.Atoi(r.URL.Query().Get("tx_page")); err == nil {
+				txPage = p
+			}
+			if ps, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil {
+				txPageSize = ps
+			}
+			detail, txTotal, err := store.GetMemberDetail(lineUID, txPage, txPageSize)
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to get member detail: " + err.Error()})
+				return
+			}
+			if detail == nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Member not found"})
+				return
+			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"error":   "Failed to get members",
+				"success":            true,
+				"member":             detail.Member,
+				"shops":              detail.Shops,
+				"transactions":       detail.Transactions,
+				"transactions_total": txTotal,
 			})
 			return
 		}
 
+		filter := store.MemberFilter{
+			Query:  r.URL.Query().Get("q"),
+			ShopID: r.URL.Query().Get("shop_id"),
+			Tier:   r.URL.Query().Get("tier"),
+			SortBy: r.URL.Query().Get("sort"),
+		}
+		if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil {
+			filter.Page = p
+		}
+		if ps, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil {
+			filter.PageSize = ps
+		}
+		result, err := store.GetMembers(filter)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to get members: " + err.Error()})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": true,
-			"members": members,
-			"total":   len(members),
+			"success":      true,
+			"members":      result.Members,
+			"total":        result.Total,
+			"page":         result.Page,
+			"page_size":    result.PageSize,
+			"totalPoints":  result.TotalPoints,
+			"total_points": result.TotalPoints,
 		})
 
 	case http.MethodPost:
@@ -410,69 +514,34 @@ func handleMembers(w http.ResponseWriter, r *http.Request) {
 			Points  int    `json:"points"`
 			Note    string `json:"note"`
 		}
-
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"error":   "Invalid request body",
-			})
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Invalid request body"})
+			return
+		}
+		if req.Action != "adjust_points" {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Unknown action"})
+			return
+		}
+		result, err := store.AdjustMemberPoints(req.LineUID, req.Type, req.Points, req.Note)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Failed to adjust points: " + err.Error()})
 			return
 		}
 
-		if req.Action == "adjust_points" {
-			if req.LineUID == "" {
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": false,
-					"error":   "line_uid is required",
-				})
-				return
-			}
-			if req.Points <= 0 {
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": false,
-					"error":   "points must be greater than 0",
-				})
-				return
-			}
-			if req.Type != "add" && req.Type != "deduct" {
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": false,
-					"error":   "type must be 'add' or 'deduct'",
-				})
-				return
-			}
-
-			newBalance, err := store.AdjustMemberPoints(req.LineUID, req.Type, req.Points, req.Note)
-			if err != nil {
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": false,
-					"error":   "Failed to adjust points: " + err.Error(),
-				})
-				return
-			}
-
-			// Audit log
-			adminUID := extractAdminFromToken(r)
-			go store.SaveAuditLog(adminUID, "", "adjust_points", "member", req.LineUID, fmt.Sprintf("%s %d points, note: %s", req.Type, req.Points, req.Note))
-
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":    true,
-				"message":    "Points adjusted successfully",
-				"newBalance": int(newBalance),
-			})
-			return
-		}
+		adminUID := extractAdminFromToken(r)
+		details := fmt.Sprintf("%s %d points, before: %.0f, after: %.0f, tx: %s, reason: %s", req.Type, req.Points, result.PreviousBalance, result.NewBalance, result.TransactionID, req.Note)
+		go store.SaveAuditLog(adminUID, "", "adjust_points", "member", req.LineUID, details)
 
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"error":   "Unknown action",
+			"success":         true,
+			"message":         "Points adjusted successfully",
+			"newBalance":      int(result.NewBalance),
+			"previousBalance": int(result.PreviousBalance),
+			"transactionId":   result.TransactionID,
+			"result":          result,
 		})
-
 	default:
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"error":   "Method not allowed",
-		})
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "error": "Method not allowed"})
 	}
 }
 
@@ -483,7 +552,15 @@ func handleTransactions(w http.ResponseWriter, r *http.Request) {
 		StartDate: r.URL.Query().Get("start_date"),
 		EndDate:   r.URL.Query().Get("end_date"),
 		ShopID:    r.URL.Query().Get("shop_id"),
+		LineUID:   r.URL.Query().Get("line_uid"),
+		Query:     r.URL.Query().Get("q"),
 		TxType:    r.URL.Query().Get("type"),
+	}
+	if filter.ShopID == "all" {
+		filter.ShopID = ""
+	}
+	if filter.TxType == "all" {
+		filter.TxType = ""
 	}
 	if p, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil {
 		filter.Page = p
@@ -491,12 +568,18 @@ func handleTransactions(w http.ResponseWriter, r *http.Request) {
 	if ps, err := strconv.Atoi(r.URL.Query().Get("page_size")); err == nil {
 		filter.PageSize = ps
 	}
+	if filter.Page <= 0 {
+		filter.Page = 1
+	}
+	if filter.PageSize <= 0 {
+		filter.PageSize = 50
+	}
 
 	transactions, todayStats, total, err := store.GetAllTransactions(filter)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": false,
-			"error":   "Failed to get transactions",
+			"error":   "Failed to get transactions: " + err.Error(),
 		})
 		return
 	}
@@ -632,7 +715,7 @@ func handleAdmins(w http.ResponseWriter, r *http.Request) {
 		if callerUID == req.LineUID {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   "ไม่สามารถลบตัวเองได้",
+				"error":   "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¥à¸šà¸•à¸±à¸§à¹€à¸­à¸‡à¹„à¸”à¹‰",
 			})
 			return
 		}
@@ -651,7 +734,7 @@ func handleAdmins(w http.ResponseWriter, r *http.Request) {
 				if superCount <= 1 {
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"success": false,
-						"error":   "ไม่สามารถลบ Super Admin คนสุดท้ายได้",
+						"error":   "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¥à¸š Super Admin à¸„à¸™à¸ªà¸¸à¸”à¸—à¹‰à¸²à¸¢à¹„à¸”à¹‰",
 					})
 					return
 				}

@@ -17,8 +17,8 @@ type SaleInvoiceRequest struct {
 	LineUID     string  `json:"line_uid"`
 	ShopID      string  `json:"shop_id"` // External ID from POS system
 	DocNo       string  `json:"doc_no"`
-	Amount      float64 `json:"amount"`       // ยอดซื้อ (ใหม่) - API จะคำนวณแต้มให้
-	GetPoint    float64 `json:"get_point"`    // (เดิม) backward compatible - ถ้าส่งมาจะใช้ค่านี้
+	Amount      float64 `json:"amount"`    // ยอดซื้อ (ใหม่) - API จะคำนวณแต้มให้
+	GetPoint    float64 `json:"get_point"` // (เดิม) backward compatible - ถ้าส่งมาจะใช้ค่านี้
 	UsePoint    float64 `json:"use_point"`
 	DisplayName string  `json:"display_name"` // ชื่อสมาชิก (optional)
 	PictureURL  string  `json:"picture_url"`  // รูปโปรไฟล์ (optional)
@@ -111,7 +111,7 @@ func handleCalculatePoint(w http.ResponseWriter, r *http.Request) {
 		sendCalcError(w, http.StatusUnauthorized, "Invalid API Key")
 		return
 	}
-	if shop.Status != "active" {
+	if !store.IsShopActive(shop) {
 		sendCalcError(w, http.StatusForbidden, "Shop is not active")
 		return
 	}
@@ -212,7 +212,7 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 		sendError(w, http.StatusUnauthorized, "Invalid API Key")
 		return
 	}
-	if shop.Status != "active" {
+	if !store.IsShopActive(shop) {
 		sendError(w, http.StatusForbidden, "Shop is not active")
 		return
 	}
@@ -273,6 +273,7 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if req.UsePoint > memberBalance {
+			_ = st.LogInvoiceIssue(ctx, req.ShopID, shopName, req.DocNo, req.LineUID, "rejected", "insufficient points balance")
 			sendError(w, http.StatusBadRequest, "Insufficient points balance")
 			return
 		}
@@ -283,10 +284,12 @@ func handleSaleInvoice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if err == store.ErrDuplicateTransaction {
 			log.Printf("WARN: Duplicate transaction doc_no=%s shop_id=%s", req.DocNo, req.ShopID)
+			_ = st.LogInvoiceIssue(ctx, req.ShopID, shopName, req.DocNo, req.LineUID, "duplicate", "doc_no already exists")
 			sendError(w, http.StatusConflict, "Duplicate transaction: doc_no already exists")
 			return
 		}
 		log.Printf("ERROR: SavePointTransaction failed: %v", err)
+		_ = st.LogInvoiceIssue(ctx, req.ShopID, shopName, req.DocNo, req.LineUID, "rejected", err.Error())
 		sendError(w, http.StatusInternalServerError, "Failed to save transaction")
 		return
 	}

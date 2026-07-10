@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -34,13 +36,17 @@ type ChatMessage struct {
 
 // PointTransaction represents a point transaction record
 type PointTransaction struct {
-	LineUID   string    `bson:"line_uid" json:"line_uid"`
-	ShopID    string    `bson:"shop_id" json:"shop_id"`
-	ShopName  string    `bson:"shop_name" json:"shop_name"`
-	DocNo     string    `bson:"doc_no" json:"doc_no"`
-	GetPoint  float64   `bson:"get_point" json:"get_point"`
-	UsePoint  float64   `bson:"use_point" json:"use_point"`
-	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+	LineUID       string    `bson:"line_uid" json:"line_uid"`
+	ShopID        string    `bson:"shop_id" json:"shop_id"`
+	ShopName      string    `bson:"shop_name" json:"shop_name"`
+	DocNo         string    `bson:"doc_no" json:"doc_no"`
+	GetPoint      float64   `bson:"get_point" json:"get_point"`
+	UsePoint      float64   `bson:"use_point" json:"use_point"`
+	Note          string    `bson:"note,omitempty" json:"note,omitempty"`
+	Source        string    `bson:"source,omitempty" json:"source,omitempty"`
+	BalanceBefore float64   `bson:"balance_before,omitempty" json:"balance_before,omitempty"`
+	BalanceAfter  float64   `bson:"balance_after,omitempty" json:"balance_after,omitempty"`
+	CreatedAt     time.Time `bson:"created_at" json:"created_at"`
 }
 
 // Member represents a LINE member with central point balance (not per-shop)
@@ -103,16 +109,16 @@ func formatTimeAgo(t time.Time) string {
 	diff := time.Since(t)
 
 	if diff < time.Minute {
-		return "เมื่อกี้"
+		return "à¹€à¸¡à¸·à¹ˆà¸­à¸à¸µà¹‰"
 	} else if diff < time.Hour {
 		mins := int(diff.Minutes())
-		return fmt.Sprintf("%d นาทีที่แล้ว", mins)
+		return fmt.Sprintf("%d à¸™à¸²à¸—à¸µà¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", mins)
 	} else if diff < 24*time.Hour {
 		hours := int(diff.Hours())
-		return fmt.Sprintf("%d ชั่วโมงที่แล้ว", hours)
+		return fmt.Sprintf("%d à¸Šà¸±à¹ˆà¸§à¹‚à¸¡à¸‡à¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", hours)
 	} else {
 		days := int(diff.Hours() / 24)
-		return fmt.Sprintf("%d วันที่แล้ว", days)
+		return fmt.Sprintf("%d à¸§à¸±à¸™à¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", days)
 	}
 }
 
@@ -334,6 +340,19 @@ func (s *Store) UpsertMember(ctx context.Context, lineUID, displayName, pictureU
 }
 
 // UpdateMemberPoints updates a member's central point balance and tier
+func (s *Store) LogInvoiceIssue(ctx context.Context, shopID, shopName, docNo, lineUID, issueType, reason string) error {
+	issuesColl := s.client.Database("bcmember").Collection("invoice_issues")
+	_, err := issuesColl.InsertOne(ctx, invoiceIssueRecord{
+		ShopID:    shopID,
+		ShopName:  shopName,
+		DocNo:     docNo,
+		LineUID:   lineUID,
+		IssueType: issueType,
+		Reason:    reason,
+		CreatedAt: time.Now(),
+	})
+	return err
+}
 func (s *Store) UpdateMemberPoints(ctx context.Context, lineUID string, pointChange float64, getPoint float64) (float64, string, error) {
 	filter := bson.M{
 		"line_uid": lineUID,
@@ -571,15 +590,41 @@ type ShopData struct {
 }
 
 type DashboardStats struct {
-	TotalMembers       int
-	TotalShops         int
-	PointsEarnedToday  int
-	PointsUsedToday    int
-	ShopsStats         []ShopPointsStats
-	RecentTransactions []RecentTxData
-	TierStats          map[string]int `json:"tier_stats"`
+	TotalMembers           int                `json:"total_members"`
+	TotalShops             int                `json:"total_shops"`
+	PointsEarnedToday      int                `json:"points_earned_today"`
+	PointsUsedToday        int                `json:"points_used_today"`
+	OutstandingPoints      int                `json:"outstanding_points"`
+	ShopsStats             []ShopPointsStats  `json:"shops_stats"`
+	RecentTransactions     []RecentTxData     `json:"recent_transactions"`
+	TierStats              map[string]int     `json:"tier_stats"`
+	TopMembers             []MemberData       `json:"top_members"`
+	AbnormalAdjustments    []TransactionData  `json:"abnormal_adjustments"`
+	DuplicateInvoicesToday int                `json:"duplicate_invoices_today"`
+	RejectedInvoicesToday  int                `json:"rejected_invoices_today"`
+	RecentInvoiceIssues    []InvoiceIssueData `json:"recent_invoice_issues"`
 }
 
+type InvoiceIssueData struct {
+	ID        string `json:"id" bson:"_id,omitempty"`
+	ShopID    string `json:"shop_id" bson:"shop_id"`
+	ShopName  string `json:"shop_name" bson:"shop_name"`
+	DocNo     string `json:"doc_no" bson:"doc_no"`
+	LineUID   string `json:"line_uid" bson:"line_uid"`
+	IssueType string `json:"issue_type" bson:"issue_type"`
+	Reason    string `json:"reason" bson:"reason"`
+	CreatedAt string `json:"created_at" bson:"-"`
+}
+
+type invoiceIssueRecord struct {
+	ShopID    string    `bson:"shop_id"`
+	ShopName  string    `bson:"shop_name"`
+	DocNo     string    `bson:"doc_no"`
+	LineUID   string    `bson:"line_uid"`
+	IssueType string    `bson:"issue_type"`
+	Reason    string    `bson:"reason"`
+	CreatedAt time.Time `bson:"created_at"`
+}
 type ShopPointsStats struct {
 	ShopID       string `json:"shop_id" bson:"_id"`
 	ShopName     string `json:"shop_name" bson:"shop_name"`
@@ -612,23 +657,92 @@ type MemberData struct {
 }
 
 type TransactionData struct {
-	ID            string
-	TransactionID string
-	MemberUID     string
-	MemberName    string
-	MemberPicture string
-	Shop          string
-	Type          string
-	Points        int
-	Amount        int
-	Date          string
+	ID            string  `json:"id"`
+	TransactionID string  `json:"transaction_id"`
+	MemberUID     string  `json:"member_uid"`
+	MemberName    string  `json:"member_name"`
+	MemberPicture string  `json:"member_picture"`
+	ShopID        string  `json:"shop_id"`
+	Shop          string  `json:"shop"`
+	Type          string  `json:"type"`
+	Points        int     `json:"points"`
+	GetPoint      float64 `json:"get_point"`
+	UsePoint      float64 `json:"use_point"`
+	Amount        int     `json:"amount"`
+	Date          string  `json:"date"`
+	Note          string  `json:"note,omitempty"`
+	Source        string  `json:"source,omitempty"`
+	BalanceBefore float64 `json:"balance_before,omitempty"`
+	BalanceAfter  float64 `json:"balance_after,omitempty"`
 }
 
+type ShopMemberSummary struct {
+	LineUID          string    `json:"line_uid"`
+	DisplayName      string    `json:"display_name"`
+	PictureURL       string    `json:"picture_url"`
+	PointsEarned     float64   `json:"points_earned"`
+	PointsUsed       float64   `json:"points_used"`
+	PointBalance     float64   `json:"point_balance"`
+	TransactionCount int       `json:"transaction_count"`
+	LastVisit        time.Time `json:"last_visit"`
+}
+
+type ShopDetailStats struct {
+	MemberCount      int     `json:"member_count"`
+	TransactionCount int     `json:"transaction_count"`
+	PointsEarned     float64 `json:"points_earned"`
+	PointsUsed       float64 `json:"points_used"`
+	PointBalance     float64 `json:"point_balance"`
+}
+
+type ShopDetailData struct {
+	Stats              ShopDetailStats     `json:"stats"`
+	Members            []ShopMemberSummary `json:"members"`
+	TopMembers         []ShopMemberSummary `json:"top_members"`
+	RecentTransactions []TransactionData   `json:"recent_transactions"`
+	InvoiceIssues      []InvoiceIssueData  `json:"invoice_issues"`
+}
 type TodayStatsData struct {
 	Count  int
 	Earned int
 	Used   int
 	Net    int
+}
+
+type MemberFilter struct {
+	Query    string
+	ShopID   string
+	Tier     string
+	SortBy   string
+	Page     int
+	PageSize int
+}
+
+type MemberListResult struct {
+	Members     []MemberData `json:"members"`
+	Total       int          `json:"total"`
+	Page        int          `json:"page"`
+	PageSize    int          `json:"page_size"`
+	TotalPoints int          `json:"total_points"`
+}
+
+type MemberDetailData struct {
+	Member       MemberData        `json:"member"`
+	Shops        []MemberShopInfo  `json:"shops"`
+	Transactions []TransactionData `json:"transactions"`
+}
+
+type AdjustPointResult struct {
+	NewBalance      float64 `json:"new_balance"`
+	PreviousBalance float64 `json:"previous_balance"`
+	TransactionID   string  `json:"transaction_id"`
+}
+
+type PointRulePreview struct {
+	Amount      float64 `json:"amount"`
+	GetPoint    int     `json:"get_point"`
+	RedeemPoint float64 `json:"redeem_point"`
+	RedeemValue float64 `json:"redeem_value"`
 }
 
 // SaveAdmin saves or updates an admin user
@@ -786,6 +900,65 @@ func GetDashboardStats() (*DashboardStats, error) {
 		}
 	}
 
+	// Outstanding points and top members
+	outstandingPipeline := mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{"_id": nil, "points": bson.M{"$sum": "$point_balance"}}}},
+	}
+	if outCursor, err := membersColl.Aggregate(ctx, outstandingPipeline); err == nil {
+		defer outCursor.Close(ctx)
+		if outCursor.Next(ctx) {
+			var row struct {
+				Points float64 `bson:"points"`
+			}
+			if outCursor.Decode(&row) == nil {
+				stats.OutstandingPoints = int(row.Points)
+			}
+		}
+	}
+
+	topOpts := options.Find().SetSort(bson.D{{Key: "point_balance", Value: -1}}).SetLimit(10)
+	if topCursor, err := membersColl.Find(ctx, bson.M{}, topOpts); err == nil {
+		defer topCursor.Close(ctx)
+		var topMembers []Member
+		if topCursor.All(ctx, &topMembers) == nil {
+			stats.TopMembers = make([]MemberData, 0, len(topMembers))
+			for _, m := range topMembers {
+				stats.TopMembers = append(stats.TopMembers, memberDataFromMember(m))
+			}
+		}
+	}
+
+	abnormalFilter := bson.M{"$or": []bson.M{{"source": "admin_adjust"}, {"shop_id": "admin"}, {"doc_no": bson.M{"$regex": "^ADJ_"}}}}
+	abnormalOpts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(20)
+	if abnormalCursor, err := pointTransColl.Find(ctx, abnormalFilter, abnormalOpts); err == nil {
+		defer abnormalCursor.Close(ctx)
+		var txs []PointTransaction
+		if abnormalCursor.All(ctx, &txs) == nil {
+			memberMap := make(map[string]*Member)
+			lineUIDs := make([]string, 0, len(txs))
+			for _, tx := range txs {
+				if tx.LineUID != "" {
+					memberMap[tx.LineUID] = nil
+					lineUIDs = append(lineUIDs, tx.LineUID)
+				}
+			}
+			if len(lineUIDs) > 0 {
+				if mCursor, err := membersColl.Find(ctx, bson.M{"line_uid": bson.M{"$in": lineUIDs}}); err == nil {
+					defer mCursor.Close(ctx)
+					for mCursor.Next(ctx) {
+						var m Member
+						if mCursor.Decode(&m) == nil {
+							memberMap[m.LineUID] = &m
+						}
+					}
+				}
+			}
+			stats.AbnormalAdjustments = make([]TransactionData, 0, len(txs))
+			for _, tx := range txs {
+				stats.AbnormalAdjustments = append(stats.AbnormalAdjustments, transactionDataFromPointTransaction(tx, memberMap))
+			}
+		}
+	}
 	// Count shops
 	shopCount, _ := shopsColl.CountDocuments(ctx, bson.M{})
 	stats.TotalShops = int(shopCount)
@@ -808,6 +981,31 @@ func GetDashboardStats() (*DashboardStats, error) {
 		}
 	}
 
+	issuesColl := db.Collection("invoice_issues")
+	createdToday := bson.M{"$gte": today}
+	duplicateToday, _ := issuesColl.CountDocuments(ctx, bson.M{"issue_type": "duplicate", "created_at": createdToday})
+	rejectedToday, _ := issuesColl.CountDocuments(ctx, bson.M{"issue_type": "rejected", "created_at": createdToday})
+	stats.DuplicateInvoicesToday = int(duplicateToday)
+	stats.RejectedInvoicesToday = int(rejectedToday)
+
+	issueOpts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(20)
+	if issueCursor, err := issuesColl.Find(ctx, bson.M{}, issueOpts); err == nil {
+		defer issueCursor.Close(ctx)
+		for issueCursor.Next(ctx) {
+			var issue invoiceIssueRecord
+			if issueCursor.Decode(&issue) == nil {
+				stats.RecentInvoiceIssues = append(stats.RecentInvoiceIssues, InvoiceIssueData{
+					ShopID:    issue.ShopID,
+					ShopName:  issue.ShopName,
+					DocNo:     issue.DocNo,
+					LineUID:   issue.LineUID,
+					IssueType: issue.IssueType,
+					Reason:    issue.Reason,
+					CreatedAt: issue.CreatedAt.Format(time.RFC3339),
+				})
+			}
+		}
+	}
 	// Get shop points stats - aggregate by shop_id, sorted by points_earned desc
 	pipeline := []bson.M{
 		{
@@ -849,21 +1047,21 @@ func GetDashboardStats() (*DashboardStats, error) {
 				}
 
 				// Get member info
-				memberName := "สมาชิก"
+				memberName := "à¸ªà¸¡à¸²à¸Šà¸´à¸"
 				memberPicture := "https://via.placeholder.com/32"
 				var member Member
 				if err := membersColl.FindOne(ctx, bson.M{"line_uid": tx.LineUID}).Decode(&member); err == nil {
 					if member.DisplayName != "" {
 						memberName = member.DisplayName
 					} else if len(tx.LineUID) > 4 {
-						memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
+						memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
 					}
 					if member.PictureURL != "" {
 						memberPicture = member.PictureURL
 					}
 				} else if len(tx.LineUID) > 4 {
 					// Member not found, show partial line_uid
-					memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
+					memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
 				}
 
 				// Format time ago
@@ -1068,8 +1266,10 @@ func GetMemberShops(lineUID string) ([]MemberShopInfo, error) {
 			"shop_id":    bson.M{"$first": "$shop_id"},
 			"get_point":  bson.M{"$sum": "$get_point"},
 			"use_point":  bson.M{"$sum": "$use_point"},
+			"tx_count":   bson.M{"$sum": 1},
 			"last_visit": bson.M{"$max": "$created_at"},
 		}},
+		{"$sort": bson.M{"last_visit": -1}},
 	}
 
 	cursor, err := pointTransColl.Aggregate(ctx, pipeline)
@@ -1085,16 +1285,20 @@ func GetMemberShops(lineUID string) ([]MemberShopInfo, error) {
 			ShopID    string    `bson:"shop_id"`
 			GetPoint  float64   `bson:"get_point"`
 			UsePoint  float64   `bson:"use_point"`
+			TxCount   int       `bson:"tx_count"`
 			LastVisit time.Time `bson:"last_visit"`
 		}
 		if err := cursor.Decode(&item); err != nil {
 			continue
 		}
 		results = append(results, MemberShopInfo{
-			ShopID:       item.ShopID,
-			ShopName:     item.ShopName,
-			PointBalance: item.GetPoint - item.UsePoint,
-			LastVisit:    item.LastVisit,
+			ShopID:           item.ShopID,
+			ShopName:         item.ShopName,
+			PointsEarned:     item.GetPoint,
+			PointsUsed:       item.UsePoint,
+			PointBalance:     item.GetPoint - item.UsePoint,
+			TransactionCount: item.TxCount,
+			LastVisit:        item.LastVisit,
 		})
 	}
 
@@ -1103,10 +1307,13 @@ func GetMemberShops(lineUID string) ([]MemberShopInfo, error) {
 
 // MemberShopInfo represents shop info for a member
 type MemberShopInfo struct {
-	ShopID       string    `json:"shop_id"`
-	ShopName     string    `json:"shop_name"`
-	PointBalance float64   `json:"point_balance"`
-	LastVisit    time.Time `json:"last_visit"`
+	ShopID           string    `json:"shop_id"`
+	ShopName         string    `json:"shop_name"`
+	PointsEarned     float64   `json:"points_earned"`
+	PointsUsed       float64   `json:"points_used"`
+	PointBalance     float64   `json:"point_balance"`
+	TransactionCount int       `json:"transaction_count"`
+	LastVisit        time.Time `json:"last_visit"`
 }
 
 // generateRandomString generates a random string of given length
@@ -1204,69 +1411,535 @@ func GetAllMembers() ([]MemberData, error) {
 	return result, nil
 }
 
-// AdjustMemberPoints adjusts a member's points by admin (add or deduct)
-// It creates a transaction record and updates the member's point balance
-func AdjustMemberPoints(lineUID, adjustType string, points int, note string) (float64, error) {
+func memberDataFromMember(m Member) MemberData {
+	tier := m.Tier
+	if tier == "" {
+		tier = CalculateTier(m.TotalEarned)
+	}
+	joinedAt := ""
+	if !m.CreatedAt.IsZero() {
+		joinedAt = m.CreatedAt.Format("2 Jan 2006")
+	}
+	lastActive := ""
+	if !m.UpdatedAt.IsZero() {
+		lastActive = m.UpdatedAt.Format("2 Jan 2006")
+	}
+	return MemberData{
+		ID:            m.LineUID,
+		LineUID:       m.LineUID,
+		DisplayName:   m.DisplayName,
+		PictureURL:    m.PictureURL,
+		ShopsVisited:  []string{},
+		CurrentPoints: int(m.PointBalance),
+		TotalEarned:   int(m.TotalEarned),
+		Tier:          tier,
+		JoinedAt:      joinedAt,
+		LastActive:    lastActive,
+	}
+}
+
+func normalizePage(page, pageSize, defaultSize, maxSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = defaultSize
+	}
+	if pageSize > maxSize {
+		pageSize = maxSize
+	}
+	return page, pageSize
+}
+
+func GetMembers(filter MemberFilter) (*MemberListResult, error) {
 	s, err := getOrCreateStore()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	pointTransColl := s.pointTransColl
-	membersColl := s.membersColl
+	filter.Page, filter.PageSize = normalizePage(filter.Page, filter.PageSize, 20, 100)
+	memberFilter := bson.M{}
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		pattern := regexp.QuoteMeta(q)
+		memberFilter["$or"] = []bson.M{
+			{"display_name": bson.M{"$regex": pattern, "$options": "i"}},
+			{"line_uid": bson.M{"$regex": pattern, "$options": "i"}},
+		}
+	}
+	if tier := strings.TrimSpace(filter.Tier); tier != "" && tier != "all" {
+		memberFilter["tier"] = tier
+	}
+	if shopID := strings.TrimSpace(filter.ShopID); shopID != "" && shopID != "all" {
+		shopValues := []string{shopID}
+		if shop, _ := GetShopByID(shopID); shop != nil {
+			shopValues = append(shopValues, shop.Name)
+		}
+		or := make([]bson.M, 0, len(shopValues)*2)
+		for _, v := range shopValues {
+			or = append(or, bson.M{"shop_id": v}, bson.M{"shop_name": v})
+		}
+		lineUIDsRaw, err := s.pointTransColl.Distinct(ctx, "line_uid", bson.M{"$or": or})
+		if err != nil {
+			return nil, err
+		}
+		lineUIDs := make([]string, 0, len(lineUIDsRaw))
+		for _, v := range lineUIDsRaw {
+			if uid, ok := v.(string); ok && uid != "" {
+				lineUIDs = append(lineUIDs, uid)
+			}
+		}
+		if len(lineUIDs) == 0 {
+			return &MemberListResult{Members: []MemberData{}, Total: 0, Page: filter.Page, PageSize: filter.PageSize}, nil
+		}
+		memberFilter["line_uid"] = bson.M{"$in": lineUIDs}
+	}
 
-	// Create transaction record
+	total, err := s.membersColl.CountDocuments(ctx, memberFilter)
+	if err != nil {
+		return nil, err
+	}
+
+	totalPoints := 0
+	pointsPipeline := mongo.Pipeline{
+		{{Key: "$match", Value: memberFilter}},
+		{{Key: "$group", Value: bson.M{"_id": nil, "total": bson.M{"$sum": "$point_balance"}}}},
+	}
+	if cursor, err := s.membersColl.Aggregate(ctx, pointsPipeline); err == nil {
+		defer cursor.Close(ctx)
+		if cursor.Next(ctx) {
+			var row struct {
+				Total float64 `bson:"total"`
+			}
+			if cursor.Decode(&row) == nil {
+				totalPoints = int(row.Total)
+			}
+		}
+	}
+
+	sort := bson.D{{Key: "updated_at", Value: -1}}
+	switch filter.SortBy {
+	case "points":
+		sort = bson.D{{Key: "point_balance", Value: -1}}
+	case "name":
+		sort = bson.D{{Key: "display_name", Value: 1}}
+	}
+
+	findOpts := options.Find().SetSort(sort).SetSkip(int64((filter.Page - 1) * filter.PageSize)).SetLimit(int64(filter.PageSize))
+	cursor, err := s.membersColl.Find(ctx, memberFilter, findOpts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var members []Member
+	if err := cursor.All(ctx, &members); err != nil {
+		return nil, err
+	}
+
+	result := make([]MemberData, 0, len(members))
+	memberIndex := make(map[string]int)
+	lineUIDs := make([]string, 0, len(members))
+	for _, m := range members {
+		md := memberDataFromMember(m)
+		result = append(result, md)
+		memberIndex[m.LineUID] = len(result) - 1
+		lineUIDs = append(lineUIDs, m.LineUID)
+	}
+
+	if len(lineUIDs) > 0 {
+		pipeline := []bson.M{
+			{"$match": bson.M{"line_uid": bson.M{"$in": lineUIDs}}},
+			{"$group": bson.M{"_id": "$line_uid", "shops": bson.M{"$addToSet": "$shop_name"}, "total_earned": bson.M{"$sum": "$get_point"}}},
+		}
+		if aggCursor, err := s.pointTransColl.Aggregate(ctx, pipeline); err == nil {
+			defer aggCursor.Close(ctx)
+			for aggCursor.Next(ctx) {
+				var row struct {
+					LineUID     string   `bson:"_id"`
+					Shops       []string `bson:"shops"`
+					TotalEarned float64  `bson:"total_earned"`
+				}
+				if aggCursor.Decode(&row) == nil {
+					if idx, ok := memberIndex[row.LineUID]; ok {
+						result[idx].ShopsVisited = row.Shops
+						result[idx].TotalEarned = int(row.TotalEarned)
+					}
+				}
+			}
+		}
+	}
+
+	return &MemberListResult{Members: result, Total: int(total), Page: filter.Page, PageSize: filter.PageSize, TotalPoints: totalPoints}, nil
+}
+
+func GetMemberDetail(lineUID string, txPage, txPageSize int) (*MemberDetailData, int, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, 0, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var member Member
+	if err := s.membersColl.FindOne(ctx, bson.M{"line_uid": lineUID}).Decode(&member); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	md := memberDataFromMember(member)
+	shops, _ := GetMemberShops(lineUID)
+	for _, shop := range shops {
+		if shop.ShopName != "" {
+			md.ShopsVisited = append(md.ShopsVisited, shop.ShopName)
+		}
+	}
+	txs, _, total, err := GetAllTransactions(TransactionFilter{LineUID: lineUID, Page: txPage, PageSize: txPageSize})
+	if err != nil {
+		return nil, 0, err
+	}
+	return &MemberDetailData{Member: md, Shops: shops, Transactions: txs}, total, nil
+}
+
+func GetShopByID(shopID string) (*ShopData, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	shopsColl := s.client.Database("bcmember").Collection("shops")
+	var shop ShopData
+	if err := shopsColl.FindOne(ctx, bson.M{"_id": shopID}).Decode(&shop); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &shop, nil
+}
+func GetShopDetail(shopID string, txLimit int) (*ShopDetailData, error) {
+	shop, err := GetShopByID(shopID)
+	if err != nil {
+		return nil, err
+	}
+	if shop == nil {
+		return nil, nil
+	}
+
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if txLimit <= 0 {
+		txLimit = 20
+	}
+	if txLimit > 100 {
+		txLimit = 100
+	}
+
+	shopOr := []bson.M{{"shop_id": shop.ID}}
+	if strings.TrimSpace(shop.Name) != "" {
+		shopOr = append(shopOr, bson.M{"shop_name": shop.Name})
+	}
+	shopMatch := bson.M{"$or": shopOr}
+
+	detail := &ShopDetailData{}
+	memberRows := make([]ShopMemberSummary, 0)
+	lineUIDs := make([]string, 0)
+	seenLineUID := make(map[string]bool)
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: shopMatch}},
+		{{Key: "$group", Value: bson.M{
+			"_id":        "$line_uid",
+			"get_point":  bson.M{"$sum": "$get_point"},
+			"use_point":  bson.M{"$sum": "$use_point"},
+			"tx_count":   bson.M{"$sum": 1},
+			"last_visit": bson.M{"$max": "$created_at"},
+		}}},
+		{{Key: "$addFields", Value: bson.M{"point_balance": bson.M{"$subtract": []interface{}{"$get_point", "$use_point"}}}}},
+		{{Key: "$sort", Value: bson.D{{Key: "point_balance", Value: -1}, {Key: "get_point", Value: -1}}}},
+	}
+	if cursor, err := s.pointTransColl.Aggregate(ctx, pipeline); err == nil {
+		defer cursor.Close(ctx)
+		for cursor.Next(ctx) {
+			var row struct {
+				LineUID      string    `bson:"_id"`
+				GetPoint     float64   `bson:"get_point"`
+				UsePoint     float64   `bson:"use_point"`
+				PointBalance float64   `bson:"point_balance"`
+				TxCount      int       `bson:"tx_count"`
+				LastVisit    time.Time `bson:"last_visit"`
+			}
+			if cursor.Decode(&row) != nil {
+				continue
+			}
+			memberRows = append(memberRows, ShopMemberSummary{
+				LineUID:          row.LineUID,
+				PointsEarned:     row.GetPoint,
+				PointsUsed:       row.UsePoint,
+				PointBalance:     row.PointBalance,
+				TransactionCount: row.TxCount,
+				LastVisit:        row.LastVisit,
+			})
+			detail.Stats.PointsEarned += row.GetPoint
+			detail.Stats.PointsUsed += row.UsePoint
+			detail.Stats.TransactionCount += row.TxCount
+			if row.LineUID != "" && !seenLineUID[row.LineUID] {
+				seenLineUID[row.LineUID] = true
+				lineUIDs = append(lineUIDs, row.LineUID)
+			}
+		}
+	}
+	detail.Stats.PointBalance = detail.Stats.PointsEarned - detail.Stats.PointsUsed
+	detail.Stats.MemberCount = len(lineUIDs)
+
+	memberMap := make(map[string]*Member)
+	if len(lineUIDs) > 0 {
+		if mCursor, err := s.membersColl.Find(ctx, bson.M{"line_uid": bson.M{"$in": lineUIDs}}); err == nil {
+			defer mCursor.Close(ctx)
+			for mCursor.Next(ctx) {
+				var m Member
+				if mCursor.Decode(&m) == nil {
+					memberMap[m.LineUID] = &m
+				}
+			}
+		}
+	}
+	for i := range memberRows {
+		if m := memberMap[memberRows[i].LineUID]; m != nil {
+			memberRows[i].DisplayName = m.DisplayName
+			memberRows[i].PictureURL = m.PictureURL
+		} else if len(memberRows[i].LineUID) > 4 {
+			memberRows[i].DisplayName = "User " + memberRows[i].LineUID[len(memberRows[i].LineUID)-4:]
+		}
+	}
+	detail.Members = memberRows
+	if len(memberRows) > 20 {
+		detail.TopMembers = memberRows[:20]
+	} else {
+		detail.TopMembers = memberRows
+	}
+
+	findOpts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(int64(txLimit))
+	if txCursor, err := s.pointTransColl.Find(ctx, shopMatch, findOpts); err == nil {
+		defer txCursor.Close(ctx)
+		for txCursor.Next(ctx) {
+			var tx PointTransaction
+			if txCursor.Decode(&tx) == nil {
+				detail.RecentTransactions = append(detail.RecentTransactions, transactionDataFromPointTransaction(tx, memberMap))
+			}
+		}
+	}
+
+	issuesColl := s.client.Database("bcmember").Collection("invoice_issues")
+	if issueCursor, err := issuesColl.Find(ctx, shopMatch, findOpts); err == nil {
+		defer issueCursor.Close(ctx)
+		for issueCursor.Next(ctx) {
+			var issue invoiceIssueRecord
+			if issueCursor.Decode(&issue) == nil {
+				detail.InvoiceIssues = append(detail.InvoiceIssues, InvoiceIssueData{
+					ShopID:    issue.ShopID,
+					ShopName:  issue.ShopName,
+					DocNo:     issue.DocNo,
+					LineUID:   issue.LineUID,
+					IssueType: issue.IssueType,
+					Reason:    issue.Reason,
+					CreatedAt: issue.CreatedAt.Format(time.RFC3339),
+				})
+			}
+		}
+	}
+
+	return detail, nil
+}
+func IsShopActive(shop *ShopData) bool {
+	if shop == nil {
+		return false
+	}
+	status := strings.TrimSpace(strings.ToLower(shop.Status))
+	return status == "" || status == "active"
+}
+
+func RotateShopAPIKey(shopID string) (string, error) {
+	newKey := "bc_live_" + generateRandomString(32)
+	updates := map[string]interface{}{
+		"api_key": newKey,
+		"status":  "active",
+	}
+	if err := UpdateShop(shopID, updates); err != nil {
+		return "", err
+	}
+	return newKey, nil
+}
+
+func RevokeShopAPIKey(shopID string) error {
+	return UpdateShop(shopID, map[string]interface{}{
+		"api_key": "",
+		"status":  "inactive",
+	})
+}
+
+func PreviewShopPoints(shopID string, amount, redeemPoint float64) (*PointRulePreview, error) {
+	shop, err := GetShopByID(shopID)
+	if err != nil {
+		return nil, err
+	}
+	if shop == nil {
+		return nil, nil
+	}
+	if shop.RedeemRate <= 0 {
+		shop.RedeemRate = 1
+	}
+	return &PointRulePreview{
+		Amount:      amount,
+		GetPoint:    CalculatePoints(shop, amount),
+		RedeemPoint: redeemPoint,
+		RedeemValue: redeemPoint * float64(shop.RedeemRate),
+	}, nil
+}
+func isAdminAdjustment(tx PointTransaction) bool {
+	return tx.Source == "admin_adjust" || tx.ShopID == "admin" || strings.HasPrefix(tx.DocNo, "ADJ_")
+}
+
+func transactionDataFromPointTransaction(tx PointTransaction, memberMap map[string]*Member) TransactionData {
+	txType := "earn"
+	points := int(tx.GetPoint)
+	if isAdminAdjustment(tx) {
+		txType = "adjust"
+		points = int(tx.GetPoint - tx.UsePoint)
+	} else if tx.UsePoint > 0 {
+		txType = "redeem"
+		points = -int(tx.UsePoint)
+	}
+
+	memberName := "à¸ªà¸¡à¸²à¸Šà¸´à¸"
+	memberPicture := ""
+	if m, ok := memberMap[tx.LineUID]; ok && m != nil {
+		if m.DisplayName != "" {
+			memberName = m.DisplayName
+		}
+		memberPicture = m.PictureURL
+	} else if len(tx.LineUID) > 4 {
+		memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
+	}
+
+	return TransactionData{
+		ID:            tx.DocNo,
+		TransactionID: tx.DocNo,
+		MemberUID:     tx.LineUID,
+		MemberName:    memberName,
+		MemberPicture: memberPicture,
+		ShopID:        tx.ShopID,
+		Shop:          tx.ShopName,
+		Type:          txType,
+		Points:        points,
+		GetPoint:      tx.GetPoint,
+		UsePoint:      tx.UsePoint,
+		Amount:        0,
+		Date:          tx.CreatedAt.Format(time.RFC3339),
+		Note:          tx.Note,
+		Source:        tx.Source,
+		BalanceBefore: tx.BalanceBefore,
+		BalanceAfter:  tx.BalanceAfter,
+	}
+}
+
+// AdjustMemberPoints adjusts a member's points by admin (add or deduct)
+// It creates a transaction record with reason/evidence and updates the member balance.
+func AdjustMemberPoints(lineUID, adjustType string, points int, note string) (*AdjustPointResult, error) {
+	s, err := getOrCreateStore()
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	lineUID = strings.TrimSpace(lineUID)
+	note = strings.TrimSpace(note)
+	if lineUID == "" {
+		return nil, fmt.Errorf("line_uid is required")
+	}
+	if points <= 0 {
+		return nil, fmt.Errorf("points must be greater than 0")
+	}
+	if adjustType != "add" && adjustType != "deduct" {
+		return nil, fmt.Errorf("type must be add or deduct")
+	}
+	if note == "" {
+		return nil, fmt.Errorf("reason is required")
+	}
+
+	membersColl := s.membersColl
+	var current Member
+	previousBalance := float64(0)
+	if err := membersColl.FindOne(ctx, bson.M{"line_uid": lineUID}).Decode(&current); err == nil {
+		previousBalance = current.PointBalance
+	} else if err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("failed to get member: %v", err)
+	}
+
 	var getPoint, usePoint float64
 	if adjustType == "add" {
 		getPoint = float64(points)
 	} else {
 		usePoint = float64(points)
+		if usePoint > previousBalance {
+			return nil, fmt.Errorf("insufficient points balance")
+		}
 	}
 
+	pointChange := getPoint - usePoint
+	newBalanceExpected := previousBalance + pointChange
 	docNo := fmt.Sprintf("ADJ_%d", time.Now().UnixNano())
 	trans := PointTransaction{
-		LineUID:   lineUID,
-		ShopID:    "admin",
-		ShopName:  "ปรับแต้มโดย Admin",
-		DocNo:     docNo,
-		GetPoint:  getPoint,
-		UsePoint:  usePoint,
-		CreatedAt: time.Now(),
+		LineUID:       lineUID,
+		ShopID:        "admin",
+		ShopName:      "Admin Adjustment",
+		DocNo:         docNo,
+		GetPoint:      getPoint,
+		UsePoint:      usePoint,
+		Note:          note,
+		Source:        "admin_adjust",
+		BalanceBefore: previousBalance,
+		BalanceAfter:  newBalanceExpected,
+		CreatedAt:     time.Now(),
 	}
-	_, err = pointTransColl.InsertOne(ctx, trans)
-	if err != nil {
-		return 0, fmt.Errorf("failed to save transaction: %v", err)
+	if _, err := s.pointTransColl.InsertOne(ctx, trans); err != nil {
+		return nil, fmt.Errorf("failed to save transaction: %v", err)
 	}
 
-	// Update member point balance and total_earned
-	pointChange := getPoint - usePoint
 	incFields := bson.M{"point_balance": pointChange}
 	if getPoint > 0 {
 		incFields["total_earned"] = getPoint
 	}
 	filter := bson.M{"line_uid": lineUID}
 	update := bson.M{
-		"$inc": incFields,
-		"$set": bson.M{"updated_at": time.Now()},
+		"$inc":         incFields,
+		"$set":         bson.M{"updated_at": time.Now()},
+		"$setOnInsert": bson.M{"line_uid": lineUID, "created_at": time.Now()},
 	}
 	opts := options.FindOneAndUpdate().SetReturnDocument(options.After).SetUpsert(true)
 
 	var member Member
-	err = membersColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&member)
-	if err != nil {
-		return 0, fmt.Errorf("failed to update member points: %v", err)
+	if err := membersColl.FindOneAndUpdate(ctx, filter, update, opts).Decode(&member); err != nil {
+		return nil, fmt.Errorf("failed to update member points: %v", err)
 	}
 
-	// Recalculate tier
 	newTier := CalculateTier(member.TotalEarned)
 	if member.Tier != newTier {
-		membersColl.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"tier": newTier}})
+		_, _ = membersColl.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"tier": newTier}})
 	}
 
-	return member.PointBalance, nil
+	return &AdjustPointResult{NewBalance: member.PointBalance, PreviousBalance: previousBalance, TransactionID: docNo}, nil
 }
 
 // TransactionFilter for server-side filtering and pagination
@@ -1274,7 +1947,9 @@ type TransactionFilter struct {
 	StartDate string // "2025-01-15" format
 	EndDate   string // "2025-01-20" format
 	ShopID    string
-	TxType    string // "earn" | "redeem" | "" for all
+	LineUID   string
+	Query     string
+	TxType    string // "earn" | "redeem" | "adjust" | "" for all
 	Page      int
 	PageSize  int
 }
@@ -1289,55 +1964,81 @@ func GetAllTransactions(filter TransactionFilter) ([]TransactionData, *TodayStat
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	pointTransColl := s.pointTransColl
-
-	// Build dynamic filter
+	filter.Page, filter.PageSize = normalizePage(filter.Page, filter.PageSize, 50, 200)
 	mongoFilter := bson.M{}
+
 	if filter.StartDate != "" {
 		if startTime, err := time.Parse("2006-01-02", filter.StartDate); err == nil {
-			if mongoFilter["created_at"] == nil {
-				mongoFilter["created_at"] = bson.M{}
-			}
-			mongoFilter["created_at"].(bson.M)["$gte"] = startTime
+			mongoFilter["created_at"] = bson.M{"$gte": startTime}
 		}
 	}
 	if filter.EndDate != "" {
 		if endTime, err := time.Parse("2006-01-02", filter.EndDate); err == nil {
-			endTime = endTime.Add(24*time.Hour - time.Second) // end of day
+			endTime = endTime.Add(24*time.Hour - time.Second)
 			if mongoFilter["created_at"] == nil {
 				mongoFilter["created_at"] = bson.M{}
 			}
 			mongoFilter["created_at"].(bson.M)["$lte"] = endTime
 		}
 	}
-	if filter.ShopID != "" {
-		mongoFilter["shop_id"] = filter.ShopID
+	if shopID := strings.TrimSpace(filter.ShopID); shopID != "" && shopID != "all" {
+		mongoFilter["shop_id"] = shopID
 	}
-	if filter.TxType == "earn" {
+	if lineUID := strings.TrimSpace(filter.LineUID); lineUID != "" {
+		mongoFilter["line_uid"] = lineUID
+	}
+	if q := strings.TrimSpace(filter.Query); q != "" {
+		pattern := regexp.QuoteMeta(q)
+		mongoFilter["$or"] = []bson.M{
+			{"doc_no": bson.M{"$regex": pattern, "$options": "i"}},
+			{"line_uid": bson.M{"$regex": pattern, "$options": "i"}},
+			{"shop_id": bson.M{"$regex": pattern, "$options": "i"}},
+			{"shop_name": bson.M{"$regex": pattern, "$options": "i"}},
+			{"note": bson.M{"$regex": pattern, "$options": "i"}},
+		}
+	}
+
+	switch filter.TxType {
+	case "earn":
 		mongoFilter["get_point"] = bson.M{"$gt": 0}
-	} else if filter.TxType == "redeem" {
+		mongoFilter["source"] = bson.M{"$ne": "admin_adjust"}
+		if _, hasShopFilter := mongoFilter["shop_id"]; !hasShopFilter {
+			mongoFilter["shop_id"] = bson.M{"$ne": "admin"}
+		}
+	case "redeem":
 		mongoFilter["use_point"] = bson.M{"$gt": 0}
+		mongoFilter["source"] = bson.M{"$ne": "admin_adjust"}
+		if _, hasShopFilter := mongoFilter["shop_id"]; !hasShopFilter {
+			mongoFilter["shop_id"] = bson.M{"$ne": "admin"}
+		}
+	case "adjust":
+		mongoFilter["$or_adjust"] = []bson.M{
+			{"source": "admin_adjust"},
+			{"shop_id": "admin"},
+			{"doc_no": bson.M{"$regex": "^ADJ_"}},
+		}
+	}
+	if adjustOr, ok := mongoFilter["$or_adjust"]; ok {
+		delete(mongoFilter, "$or_adjust")
+		if existingOr, hasExisting := mongoFilter["$or"]; hasExisting {
+			mongoFilter["$and"] = []bson.M{{"$or": existingOr}, {"$or": adjustOr}}
+			delete(mongoFilter, "$or")
+		} else {
+			mongoFilter["$or"] = adjustOr
+		}
 	}
 
-	// Defaults
-	if filter.PageSize <= 0 {
-		filter.PageSize = 50
-	}
-	if filter.Page <= 0 {
-		filter.Page = 1
+	total, err := s.pointTransColl.CountDocuments(ctx, mongoFilter)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 
-	// Get total count
-	total, _ := pointTransColl.CountDocuments(ctx, mongoFilter)
-
-	// Query with pagination
-	skip := int64((filter.Page - 1) * filter.PageSize)
 	findOpts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: -1}}).
-		SetSkip(skip).
+		SetSkip(int64((filter.Page - 1) * filter.PageSize)).
 		SetLimit(int64(filter.PageSize))
 
-	cursor, err := pointTransColl.Find(ctx, mongoFilter, findOpts)
+	cursor, err := s.pointTransColl.Find(ctx, mongoFilter, findOpts)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -1348,18 +2049,19 @@ func GetAllTransactions(filter TransactionFilter) ([]TransactionData, *TodayStat
 		return nil, nil, 0, err
 	}
 
-	// Build member lookup map for display names
 	memberMap := make(map[string]*Member)
 	lineUIDs := make([]string, 0)
 	for _, tx := range transactions {
+		if tx.LineUID == "" {
+			continue
+		}
 		if _, exists := memberMap[tx.LineUID]; !exists {
 			memberMap[tx.LineUID] = nil
 			lineUIDs = append(lineUIDs, tx.LineUID)
 		}
 	}
 	if len(lineUIDs) > 0 {
-		membersColl := s.membersColl
-		mCursor, mErr := membersColl.Find(ctx, bson.M{"line_uid": bson.M{"$in": lineUIDs}})
+		mCursor, mErr := s.membersColl.Find(ctx, bson.M{"line_uid": bson.M{"$in": lineUIDs}})
 		if mErr == nil {
 			defer mCursor.Close(ctx)
 			for mCursor.Next(ctx) {
@@ -1373,43 +2075,12 @@ func GetAllTransactions(filter TransactionFilter) ([]TransactionData, *TodayStat
 
 	result := make([]TransactionData, 0, len(transactions))
 	for _, tx := range transactions {
-		txType := "earn"
-		points := int(tx.GetPoint)
-		if tx.UsePoint > 0 {
-			txType = "redeem"
-			points = -int(tx.UsePoint)
-		}
-
-		memberName := "สมาชิก"
-		memberPicture := ""
-		if m, ok := memberMap[tx.LineUID]; ok && m != nil {
-			if m.DisplayName != "" {
-				memberName = m.DisplayName
-			}
-			memberPicture = m.PictureURL
-		} else if len(tx.LineUID) > 4 {
-			memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
-		}
-
-		result = append(result, TransactionData{
-			ID:            tx.DocNo,
-			TransactionID: tx.DocNo,
-			MemberUID:     tx.LineUID,
-			MemberName:    memberName,
-			MemberPicture: memberPicture,
-			Shop:          tx.ShopName,
-			Type:          txType,
-			Points:        points,
-			Amount:        0,
-			Date:          tx.CreatedAt.Format(time.RFC3339),
-		})
+		result = append(result, transactionDataFromPointTransaction(tx, memberMap))
 	}
 
-	// Today stats (always computed separately, not affected by filter)
 	todayStats := &TodayStatsData{}
 	today := time.Now().Truncate(24 * time.Hour)
-	todayFilter := bson.M{"created_at": bson.M{"$gte": today}}
-	todayCursor, todayErr := pointTransColl.Find(ctx, todayFilter)
+	todayCursor, todayErr := s.pointTransColl.Find(ctx, bson.M{"created_at": bson.M{"$gte": today}})
 	if todayErr == nil {
 		defer todayCursor.Close(ctx)
 		for todayCursor.Next(ctx) {
@@ -1457,7 +2128,7 @@ func GetDashboardChartData(days int) (*ChartData, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	startDate := time.Now().Truncate(24 * time.Hour).AddDate(0, 0, -(days - 1))
+	startDate := time.Now().Truncate(24*time.Hour).AddDate(0, 0, -(days - 1))
 
 	// Points aggregation by date
 	pointsPipeline := mongo.Pipeline{
