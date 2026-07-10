@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -26,13 +27,13 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	liffID := getEnvOrDefault("LIFF_ID", "2008745223-8Ol0oVZk")
-	tableLiffID := os.Getenv("TABLE_LIFF_ID")
+	tableLiffID := strings.TrimSpace(os.Getenv("TABLE_LIFF_ID"))
 	cfg := &Config{
 		Port:              getEnvOrDefault("PORT", "8080"),
-		MongoURI:          os.Getenv("MONGODB_URI"),
-		LineChannelSecret: os.Getenv("LINE_CHANNEL_SECRET"),
-		LineChannelToken:  os.Getenv("LINE_CHANNEL_TOKEN"),
-		GeminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
+		MongoURI:          strings.TrimSpace(os.Getenv("MONGODB_URI")),
+		LineChannelSecret: strings.TrimSpace(os.Getenv("LINE_CHANNEL_SECRET")),
+		LineChannelToken:  strings.TrimSpace(os.Getenv("LINE_CHANNEL_TOKEN")),
+		GeminiAPIKey:      strings.TrimSpace(os.Getenv("GEMINI_API_KEY")),
 		LiffID:            liffID,
 		LiffURL:           "https://liff.line.me/" + liffID,
 		TableLiffID:       tableLiffID,
@@ -64,7 +65,7 @@ func (c *Config) Validate() error {
 }
 
 func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
 	}
 	return defaultValue

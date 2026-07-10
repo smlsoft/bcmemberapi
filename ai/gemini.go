@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
+	"time"
 )
 
 type GeminiService struct {
@@ -41,7 +44,7 @@ type geminiResponse struct {
 }
 
 func NewGeminiService(apiKey string) *GeminiService {
-	return &GeminiService{apiKey: apiKey}
+	return &GeminiService{apiKey: strings.TrimSpace(apiKey)}
 }
 
 func (g *GeminiService) GenerateResponse(userMessage string) (string, error) {
@@ -49,7 +52,11 @@ func (g *GeminiService) GenerateResponse(userMessage string) (string, error) {
 }
 
 func (g *GeminiService) GenerateResponseWithHistory(userMessage string, history []ChatMessage) (string, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", g.apiKey)
+	apiKey := strings.TrimSpace(g.apiKey)
+	if apiKey == "" {
+		return "", fmt.Errorf("gemini API key is empty")
+	}
+	endpoint := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=%s", url.QueryEscape(apiKey))
 
 	contents := []geminiContent{}
 
@@ -84,7 +91,8 @@ func (g *GeminiService) GenerateResponseWithHistory(userMessage string, history 
 		return "", err
 	}
 
-	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", err
 	}

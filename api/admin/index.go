@@ -132,13 +132,13 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		if !allowed {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   "à¸„à¸¸à¸“à¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸´à¸—à¸˜à¸´à¹Œà¹€à¸‚à¹‰à¸²à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ Admin Panel",
+				"error":   "คุณไม่มีสิทธิ์เข้าใช้งาน Admin Panel",
 			})
 			return
 		}
 		role = "admin"
 	} else {
-		// No ADMIN_LINE_UIDS set â€” check from admins collection in database
+		// No ADMIN_LINE_UIDS set — check from admins collection in database
 		existingRole, err := store.GetAdminRole(req.LineUID)
 		if err != nil || existingRole == "" {
 			// Auto-bootstrap: if no admins exist yet, first login becomes super_admin
@@ -148,7 +148,7 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			} else {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"success": false,
-					"error":   "à¸„à¸¸à¸“à¹„à¸¡à¹ˆà¸¡à¸µà¸ªà¸´à¸—à¸˜à¸´à¹Œà¹€à¸‚à¹‰à¸²à¹ƒà¸Šà¹‰à¸‡à¸²à¸™ Admin Panel",
+					"error":   "คุณไม่มีสิทธิ์เข้าใช้งาน Admin Panel",
 				})
 				return
 			}
@@ -715,7 +715,7 @@ func handleAdmins(w http.ResponseWriter, r *http.Request) {
 		if callerUID == req.LineUID {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false,
-				"error":   "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¥à¸šà¸•à¸±à¸§à¹€à¸­à¸‡à¹„à¸”à¹‰",
+				"error":   "ไม่สามารถลบตัวเองได้",
 			})
 			return
 		}
@@ -734,7 +734,7 @@ func handleAdmins(w http.ResponseWriter, r *http.Request) {
 				if superCount <= 1 {
 					json.NewEncoder(w).Encode(map[string]interface{}{
 						"success": false,
-						"error":   "à¹„à¸¡à¹ˆà¸ªà¸²à¸¡à¸²à¸£à¸–à¸¥à¸š Super Admin à¸„à¸™à¸ªà¸¸à¸”à¸—à¹‰à¸²à¸¢à¹„à¸”à¹‰",
+						"error":   "ไม่สามารถลบ Super Admin คนสุดท้ายได้",
 					})
 					return
 				}

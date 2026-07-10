@@ -66,7 +66,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get MongoDB URI
-	mongoURI := os.Getenv("MONGODB_URI")
+	mongoURI := strings.TrimSpace(os.Getenv("MONGODB_URI"))
 	if mongoURI == "" {
 		log.Println("ERROR: MongoDB URI not configured")
 		http.Error(w, "MongoDB URI not configured", http.StatusInternalServerError)
@@ -82,7 +82,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get Gemini API key
-	geminiAPIKey := os.Getenv("GEMINI_API_KEY")
+	geminiAPIKey := strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
 	if geminiAPIKey == "" {
 		log.Println("ERROR: Gemini API key not configured")
 		http.Error(w, "Gemini API key not configured", http.StatusInternalServerError)

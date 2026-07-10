@@ -109,16 +109,16 @@ func formatTimeAgo(t time.Time) string {
 	diff := time.Since(t)
 
 	if diff < time.Minute {
-		return "à¹€à¸¡à¸·à¹ˆà¸­à¸à¸µà¹‰"
+		return "เมื่อกี้"
 	} else if diff < time.Hour {
 		mins := int(diff.Minutes())
-		return fmt.Sprintf("%d à¸™à¸²à¸—à¸µà¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", mins)
+		return fmt.Sprintf("%d นาทีที่แล้ว", mins)
 	} else if diff < 24*time.Hour {
 		hours := int(diff.Hours())
-		return fmt.Sprintf("%d à¸Šà¸±à¹ˆà¸§à¹‚à¸¡à¸‡à¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", hours)
+		return fmt.Sprintf("%d ชั่วโมงที่แล้ว", hours)
 	} else {
 		days := int(diff.Hours() / 24)
-		return fmt.Sprintf("%d à¸§à¸±à¸™à¸—à¸µà¹ˆà¹à¸¥à¹‰à¸§", days)
+		return fmt.Sprintf("%d วันที่แล้ว", days)
 	}
 }
 
@@ -310,32 +310,34 @@ func (s *Store) SavePointTransaction(ctx context.Context, lineUID, shopID, shopN
 
 // UpsertMember creates or updates a central member record (not per-shop)
 func (s *Store) UpsertMember(ctx context.Context, lineUID, displayName, pictureURL string) error {
-	filter := bson.M{
-		"line_uid": lineUID,
+	lineUID = strings.TrimSpace(lineUID)
+	displayName = strings.TrimSpace(displayName)
+	pictureURL = strings.TrimSpace(pictureURL)
+	if lineUID == "" {
+		return fmt.Errorf("line_uid is required")
 	}
+
+	now := time.Now()
+	setFields := bson.M{"updated_at": now}
+	if displayName != "" {
+		setFields["display_name"] = displayName
+	}
+	if pictureURL != "" {
+		setFields["picture_url"] = pictureURL
+	}
+
 	update := bson.M{
-		"$set": bson.M{
-			"updated_at": time.Now(),
-		},
+		"$set": setFields,
 		"$setOnInsert": bson.M{
 			"line_uid":      lineUID,
-			"display_name":  displayName,
-			"picture_url":   pictureURL,
 			"point_balance": 0,
 			"total_earned":  0,
 			"tier":          "Standard",
-			"created_at":    time.Now(),
+			"created_at":    now,
 		},
 	}
-	// Update display_name and picture_url only if provided
-	if displayName != "" {
-		update["$set"].(bson.M)["display_name"] = displayName
-	}
-	if pictureURL != "" {
-		update["$set"].(bson.M)["picture_url"] = pictureURL
-	}
 	opts := options.Update().SetUpsert(true)
-	_, err := s.membersColl.UpdateOne(ctx, filter, update, opts)
+	_, err := s.membersColl.UpdateOne(ctx, bson.M{"line_uid": lineUID}, update, opts)
 	return err
 }
 
@@ -1047,21 +1049,21 @@ func GetDashboardStats() (*DashboardStats, error) {
 				}
 
 				// Get member info
-				memberName := "à¸ªà¸¡à¸²à¸Šà¸´à¸"
-				memberPicture := "https://via.placeholder.com/32"
+				memberName := "สมาชิก"
+				memberPicture := ""
 				var member Member
 				if err := membersColl.FindOne(ctx, bson.M{"line_uid": tx.LineUID}).Decode(&member); err == nil {
 					if member.DisplayName != "" {
 						memberName = member.DisplayName
 					} else if len(tx.LineUID) > 4 {
-						memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
+						memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
 					}
 					if member.PictureURL != "" {
 						memberPicture = member.PictureURL
 					}
 				} else if len(tx.LineUID) > 4 {
 					// Member not found, show partial line_uid
-					memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
+					memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
 				}
 
 				// Format time ago
@@ -1820,7 +1822,7 @@ func transactionDataFromPointTransaction(tx PointTransaction, memberMap map[stri
 		points = -int(tx.UsePoint)
 	}
 
-	memberName := "à¸ªà¸¡à¸²à¸Šà¸´à¸"
+	memberName := "สมาชิก"
 	memberPicture := ""
 	if m, ok := memberMap[tx.LineUID]; ok && m != nil {
 		if m.DisplayName != "" {
@@ -1828,7 +1830,7 @@ func transactionDataFromPointTransaction(tx PointTransaction, memberMap map[stri
 		}
 		memberPicture = m.PictureURL
 	} else if len(tx.LineUID) > 4 {
-		memberName = "à¸œà¸¹à¹‰à¹ƒà¸Šà¹‰ " + tx.LineUID[len(tx.LineUID)-4:]
+		memberName = "ผู้ใช้ " + tx.LineUID[len(tx.LineUID)-4:]
 	}
 
 	return TransactionData{
